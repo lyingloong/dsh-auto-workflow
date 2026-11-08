@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Auto Workflow — persistent node-graph workflows for DeepSeek Harness</title>
-  <meta name="description" content="Auto Workflow is a persistent, concurrent node-graph workflow plugin for DeepSeek Harness, with agent, command, HTTP and Human nodes, per-requirement branches, draft PRs, review briefs and explicit merge control.">
+  <meta name="description" content="Auto Workflow is a persistent, concurrent node-graph workflow plugin for DeepSeek Harness: agents, commands, HTTP and Human decisions in one durable graph, with a PR-native development example.">
   <link rel="canonical" href="https://lyingloong.github.io/dsh-auto-workflow/">
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
   <meta name="theme-color" content="#ffffff">
@@ -20,7 +20,7 @@
         <ul class="nav-links">
           <li><a href="#overview">Overview</a></li>
           <li><a href="#workflow">Workflow</a></li>
-          <li><a href="#features">Features</a></li>
+          <li><a href="#architecture">Architecture</a></li>
           <li><a href="#start">Get started</a></li>
           <li><a href="https://github.com/lyingloong/dsh-auto-workflow">GitHub</a></li>
         </ul>
@@ -32,94 +32,64 @@
     <section class="hero" aria-labelledby="hero-title">
       <p class="eyebrow">DeepSeek Harness plugin · v1.0.1</p>
       <h1 id="hero-title">Auto Workflow</h1>
-      <p class="tagline">Persistent, concurrent node-graph workflows for DeepSeek Harness.</p>
-      <p class="lede">
-        Model agents, shell commands, HTTP calls and Human decisions run in one durable graph.
-        New tasks arrive as independent packets; a Human wait on one task does not stop the others.
-        The built-in development example gives every requirement a branch, a worktree and its own PR.
-      </p>
-      <p class="hero-cn">持久化、并发的节点图工作流：每个需求一条分支、一个 worktree、一个 PR。</p>
+      <p class="tagline">Persistent, concurrent workflows for DeepSeek Harness.</p>
+      <p class="lede">Agents, commands, HTTP calls and Human decisions in one durable graph. One task waiting for a Human never stops the others.</p>
+      <p class="hero-cn">持久化、并发的节点图工作流。</p>
       <ul class="hero-links">
         <li><a class="button" href="#start">Get started</a></li>
         <li><a href="https://github.com/lyingloong/dsh-auto-workflow">View source</a></li>
         <li><a href="https://github.com/lyingloong/dsh-auto-workflow/releases/tag/v1.0.1">Release v1.0.1</a></li>
-        <li><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/examples/development/README.md">Development example</a></li>
       </ul>
     </section>
 
     <section id="overview" class="section" aria-labelledby="overview-title">
       <div class="section-head">
-        <h2 id="overview-title">What it is</h2>
-        <span>control plane + execution plane</span>
+        <h2 id="overview-title">Key ideas</h2>
+        <span>three things to know</span>
       </div>
-      <div class="feature-grid">
-        <article class="feature">
-          <p class="feature-kicker">01</p>
-          <h3>One graph, many packets</h3>
-          <p>A run stays mounted. Every task enters as an independent packet with its own input, output and history. Root and node concurrency are bounded, and Human decisions never block unrelated work.</p>
+      <div class="key-grid">
+        <article>
+          <h3>Persistent runs</h3>
+          <p>New packets arrive anytime. Human waits and slow tasks do not stop unrelated work.</p>
         </article>
-        <article class="feature">
-          <p class="feature-kicker">02</p>
-          <h3>Mix models, commands and people</h3>
-          <p>Agent, command, HTTP, Human, fan-out/join, gate and subworkflow nodes share one scheduler. Model candidates fall back only when a provider or model call fails, with per-candidate reasoning effort.</p>
+        <article>
+          <h3>Mixed execution</h3>
+          <p>Agent, command, HTTP, Human, fan-out, gate and subworkflow nodes share one scheduler.</p>
         </article>
-        <article class="feature">
-          <p class="feature-kicker">03</p>
-          <h3>Built for real development</h3>
-          <p>The development example runs 3 engineers and 3 reviewers, keeps one branch/worktree per requirement, opens its own draft PR, and shows the Human a structured brief before any merge.</p>
+        <article>
+          <h3>PR-native development</h3>
+          <p>One requirement, one branch and worktree, one PR — with external merge or Human-approved self-merge.</p>
         </article>
       </div>
+      <p class="section-note"><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/README.md">Read the full overview in the repository →</a></p>
     </section>
 
     <section id="workflow" class="section" aria-labelledby="workflow-title">
       <div class="section-head">
-        <h2 id="workflow-title">How a requirement moves</h2>
+        <h2 id="workflow-title">Requirement lifecycle</h2>
         <span>branch → PR → merge → cleanup</span>
       </div>
       <figure class="diagram">
-        <img src="./assets/lifecycle.svg" alt="Lifecycle diagram: requirement, branch and worktree, draft PR, review and brief, ready PR, external merge or Human-approved self-merge, verify and cleanup." width="900" height="240">
+        <img src="./assets/lifecycle.svg" alt="Lifecycle diagram: requirement, branch and worktree, draft PR, review and brief, ready PR, external merge or Human-approved self-merge, verify and cleanup." width="900" height="180">
         <figcaption>
-          The workflow can wait for an external PR merge, or self-merge with a merge commit after Human approval.
-          Both paths verify the reviewed commit against the base branch before cleanup.
+          Every requirement gets its own branch, worktree and PR. External reviewers can merge directly; after a grace period, Human approval can authorize a workflow self-merge. Both paths use a merge commit.
         </figcaption>
       </figure>
-      <ol class="steps">
-        <li><strong>Requirement</strong><span>Stable ID, explicit source, priority and risk are recorded.</span></li>
-        <li><strong>Branch + worktree</strong><span>One retained <code>auto/req-*</code> branch checked out in its own worktree; one commit per snapshot.</span></li>
-        <li><strong>Draft PR</strong><span>The workflow pushes its branch and opens its own PR; external reviewers can see the diff early.</span></li>
-        <li><strong>Review + brief</strong><span>A reviewer pins the exact commit; the same structured brief appears in the Human board and the PR body.</span></li>
-        <li><strong>Merge</strong><span>External merge is allowed directly. After a grace period, Human approval can authorize the workflow to self-merge.</span></li>
-        <li><strong>Verify + cleanup</strong><span>Fetch the base, verify the merge commit, remove the worktree and local branch, keep artifacts and history.</span></li>
-      </ol>
+      <p class="section-note"><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/examples/development/README.md">Development workflow, branch rules and merge policy →</a></p>
     </section>
 
     <section id="architecture" class="section" aria-labelledby="architecture-title">
       <div class="section-head">
-        <h2 id="architecture-title">One engine, explicit boundaries</h2>
-        <span>DSH Host</span>
+        <h2 id="architecture-title">Architecture</h2>
+        <span>one engine, explicit boundaries</span>
       </div>
       <figure class="diagram">
         <img src="./assets/architecture.svg" alt="Architecture diagram: the Auto Workflow engine runs in the DSH Host with scheduler, packet state, artifacts and permissions; it drives agent, command, HTTP and Human executors and exposes a private board." width="900" height="330">
         <figcaption>
-          The engine owns scheduling, leases, retries, permissions and references. Executors only do the work;
-          node config and graph definitions are validated before they can run.
+          The engine owns scheduling, state, artifacts and permission checks. Executors only do the work; the private board is where Humans see the brief and decide.
         </figcaption>
       </figure>
-    </section>
-
-    <section id="features" class="section" aria-labelledby="features-title">
-      <div class="section-head">
-        <h2 id="features-title">What makes it different</h2>
-        <span>small surface, strict contracts</span>
-      </div>
-      <ul class="feature-list">
-        <li><strong>Persistent, not one-shot.</strong> A run can stay idle or wait for Humans; new packets can arrive at any time. Stopping or reloading does not silently replay uncertain effects.</li>
-        <li><strong>Packet isolation.</strong> Human A waiting does not stall Human B, another engineer or the producer. Node switches park only that node's queue.</li>
-        <li><strong>Artifacts, not chat history.</strong> Large inputs and outputs become references; state snapshots stay small and lazy views fetch details only when needed.</li>
-        <li><strong>Permissions are external to the graph.</strong> Command and HTTP access is granted by the user; a definition cannot widen its own grant.</li>
-        <li><strong>No default task deadline.</strong> Long model tasks are not cut by an implicit timeout; a deadline is opt-in.</li>
-        <li><strong>Human-first merge gate.</strong> The board shows requirement, changes, verification, review and risks before approve, revise or reject.</li>
-      </ul>
+      <p class="section-note"><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/plugin-summary.md">Plugin model, nodes and protocol reference →</a></p>
     </section>
 
     <section id="start" class="section" aria-labelledby="start-title">
@@ -127,23 +97,23 @@
         <h2 id="start-title">Get started</h2>
         <span>v1.0.1</span>
       </div>
-      <p>Install the plugin, then open a workflow from a DSH session. The plugin includes the generic runtime; the development workflow is an example you can adapt.</p>
+      <p>Install the plugin, then open a workflow from a DSH session. The development flow is an example you can adapt.</p>
       <pre><code>dsh plugin --profile desktop add \
   github:lyingloong/dsh-auto-workflow#v1.0.1</code></pre>
-      <p class="muted">Requires Node.js 22.5+ and DeepSeek Harness 0.2.1-rc.5+. For the PR example, authenticate <code>gh</code> or set <code>GITHUB_TOKEN</code> with Contents and Pull requests write access.</p>
-      <ul class="hero-links">
-        <li><a class="button" href="https://github.com/lyingloong/dsh-auto-workflow">Repository</a></li>
-        <li><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/README.md">README</a></li>
-        <li><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/plugin-summary.md">Plugin reference</a></li>
-        <li><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/workflow-summary.md">Workflow guarantees</a></li>
-      </ul>
+      <p class="section-note">
+        <a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/README.md">README</a>
+        <span class="dot">·</span>
+        <a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/workflow-summary.md">Workflow guarantees</a>
+        <span class="dot">·</span>
+        <a href="https://github.com/lyingloong/dsh-auto-workflow/releases">Releases</a>
+      </p>
     </section>
   </main>
 
   <footer class="site-footer">
     <div class="container">
       <p><strong>Auto Workflow</strong> · dsh-auto-workflow · MIT</p>
-      <p>Built for DeepSeek Harness. <a href="https://github.com/lyingloong/dsh-auto-workflow">GitHub</a> · <a href="https://github.com/lyingloong/dsh-auto-workflow/releases">Releases</a></p>
+      <p>Built for DeepSeek Harness. <a href="https://github.com/lyingloong/dsh-auto-workflow">GitHub</a></p>
     </div>
   </footer>
 </body>

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 240" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 180" role="img" aria-labelledby="title desc">
   <title id="title">Requirement lifecycle</title>
   <desc id="desc">A requirement is developed on a branch and worktree, published as a draft PR, reviewed with a shared brief, marked ready, merged externally or by the workflow after Human approval, then verified and cleaned up.</desc>
   <style>
@@ -15,51 +15,47 @@
       <path d="M0 0L10 5L0 10z" fill="#97a1ad"/>
     </marker>
   </defs>
-  <rect x="0" y="0" width="900" height="240" fill="#fff"/>
-  <text x="20" y="38" class="tiny">ONE REQUIREMENT, ONE BRANCH, ONE PR</text>
+  <rect x="0" y="0" width="900" height="180" fill="#fff"/>
+  <text x="20" y="36" class="tiny">ONE REQUIREMENT, ONE BRANCH, ONE PR</text>
 
-  <rect x="20" y="58" width="110" height="88" rx="7" class="box"/>
-  <text x="32" y="84" class="label">Requirement</text>
-  <text x="32" y="103" class="sub">stable ID</text>
-  <text x="32" y="118" class="sub">risk · priority</text>
+  <rect x="20" y="56" width="110" height="88" rx="7" class="box"/>
+  <text x="32" y="82" class="label">Requirement</text>
+  <text x="32" y="101" class="sub">stable ID</text>
+  <text x="32" y="116" class="sub">risk · priority</text>
 
-  <path d="M130 102H145" class="arrow"/>
-  <rect x="145" y="58" width="110" height="88" rx="7" class="box-accent"/>
-  <text x="157" y="84" class="label">Branch</text>
-  <text x="157" y="103" class="sub">auto/req-*</text>
-  <text x="157" y="118" class="sub">worktree</text>
+  <path d="M130 100H145" class="arrow"/>
+  <rect x="145" y="56" width="110" height="88" rx="7" class="box-accent"/>
+  <text x="157" y="82" class="label">Branch</text>
+  <text x="157" y="101" class="sub">auto/req-*</text>
+  <text x="157" y="116" class="sub">worktree</text>
 
-  <path d="M255 102H270" class="arrow"/>
-  <rect x="270" y="58" width="110" height="88" rx="7" class="box"/>
-  <text x="282" y="84" class="label">Draft PR</text>
-  <text x="282" y="103" class="sub">push + open</text>
-  <text x="282" y="118" class="sub">one commit</text>
+  <path d="M255 100H270" class="arrow"/>
+  <rect x="270" y="56" width="110" height="88" rx="7" class="box"/>
+  <text x="282" y="82" class="label">Draft PR</text>
+  <text x="282" y="101" class="sub">push + open</text>
+  <text x="282" y="116" class="sub">one commit</text>
 
-  <path d="M380 102H395" class="arrow"/>
-  <rect x="395" y="58" width="110" height="88" rx="7" class="box"/>
-  <text x="407" y="84" class="label">Review</text>
-  <text x="407" y="103" class="sub">exact commit</text>
-  <text x="407" y="118" class="sub">shared brief</text>
+  <path d="M380 100H395" class="arrow"/>
+  <rect x="395" y="56" width="110" height="88" rx="7" class="box"/>
+  <text x="407" y="82" class="label">Review</text>
+  <text x="407" y="101" class="sub">exact commit</text>
+  <text x="407" y="116" class="sub">shared brief</text>
 
-  <path d="M505 102H520" class="arrow"/>
-  <rect x="520" y="58" width="110" height="88" rx="7" class="box-accent"/>
-  <text x="532" y="84" class="label">Ready PR</text>
-  <text x="532" y="103" class="sub">external merge</text>
-  <text x="532" y="118" class="sub">can start</text>
+  <path d="M505 100H520" class="arrow"/>
+  <rect x="520" y="56" width="110" height="88" rx="7" class="box-accent"/>
+  <text x="532" y="82" class="label">Ready PR</text>
+  <text x="532" y="101" class="sub">external merge</text>
+  <text x="532" y="116" class="sub">can start</text>
 
-  <path d="M630 102H645" class="arrow"/>
-  <rect x="645" y="58" width="110" height="88" rx="7" class="box-accent"/>
-  <text x="657" y="84" class="label">Merge</text>
-  <text x="657" y="103" class="sub">external</text>
-  <text x="657" y="118" class="sub">self after Human</text>
+  <path d="M630 100H645" class="arrow"/>
+  <rect x="645" y="56" width="110" height="88" rx="7" class="box-accent"/>
+  <text x="657" y="82" class="label">Merge</text>
+  <text x="657" y="101" class="sub">external</text>
+  <text x="657" y="116" class="sub">self after Human</text>
 
-  <path d="M755 102H770" class="arrow"/>
-  <rect x="770" y="58" width="110" height="88" rx="7" class="box"/>
-  <text x="782" y="84" class="label">Verify</text>
-  <text x="782" y="103" class="sub">fetch base</text>
-  <text x="782" y="118" class="sub">cleanup</text>
-
-  <text x="20" y="190" class="sub">One commit per snapshot. Revise keeps the same branch, worktree and PR.</text>
-  <text x="20" y="210" class="sub">Merge must be a merge commit; squash/rebase changes the reviewed SHA and is rejected.</text>
-  <text x="20" y="230" class="sub">Human approval is required only when the workflow itself merges after the external-merge grace period.</text>
+  <path d="M755 100H770" class="arrow"/>
+  <rect x="770" y="56" width="110" height="88" rx="7" class="box"/>
+  <text x="782" y="82" class="label">Verify</text>
+  <text x="782" y="101" class="sub">fetch base</text>
+  <text x="782" y="116" class="sub">cleanup</text>
 </svg>

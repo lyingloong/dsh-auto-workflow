@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 360" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 330" role="img" aria-labelledby="title desc">
   <title id="title">Auto Workflow architecture</title>
   <desc id="desc">Inside the DSH Host, the Auto Workflow engine owns scheduling, packet state, artifacts and permissions. It drives agent, command, HTTP and Human executors, and exposes a private board.</desc>
   <style>
@@ -15,51 +15,47 @@
       <path d="M0 0L10 5L0 10z" fill="#97a1ad"/>
     </marker>
   </defs>
-  <rect x="0" y="0" width="900" height="360" fill="#fff"/>
-  <rect x="28" y="26" width="844" height="300" rx="10" fill="none" stroke="#dfe3e6" stroke-width="1.2"/>
+  <rect x="0" y="0" width="900" height="330" fill="#fff"/>
+  <rect x="28" y="26" width="844" height="286" rx="10" fill="none" stroke="#dfe3e6" stroke-width="1.2"/>
   <text x="46" y="48" class="tiny">DSH HOST</text>
 
-  <rect x="48" y="64" width="262" height="238" rx="8" class="engine"/>
+  <rect x="48" y="64" width="262" height="228" rx="8" class="engine"/>
   <text x="66" y="90" class="label">Auto Workflow engine</text>
   <text x="66" y="108" class="sub">control plane</text>
-  <rect x="66" y="122" width="226" height="34" rx="5" class="box"/>
-  <text x="78" y="144" class="sub">scheduler · concurrency · leases</text>
-  <rect x="66" y="166" width="226" height="34" rx="5" class="box"/>
-  <text x="78" y="188" class="sub">packets · results · retries</text>
-  <rect x="66" y="210" width="226" height="34" rx="5" class="box"/>
-  <text x="78" y="232" class="sub">artifacts · refs · lazy views</text>
-  <rect x="66" y="254" width="226" height="34" rx="5" class="box"/>
-  <text x="78" y="276" class="sub">permission grants · validation</text>
+  <rect x="66" y="120" width="226" height="34" rx="5" class="box"/>
+  <text x="78" y="142" class="sub">scheduler · concurrency · leases</text>
+  <rect x="66" y="162" width="226" height="34" rx="5" class="box"/>
+  <text x="78" y="184" class="sub">packets · results · retries</text>
+  <rect x="66" y="204" width="226" height="34" rx="5" class="box"/>
+  <text x="78" y="226" class="sub">artifacts · refs · lazy views</text>
+  <rect x="66" y="246" width="226" height="34" rx="5" class="box"/>
+  <text x="78" y="268" class="sub">permission grants · validation</text>
 
-  <path d="M310 162H356" class="arrow"/>
-  <path d="M356 198H310" class="arrow"/>
-  <text x="333" y="153" class="tiny" text-anchor="middle">DISPATCH</text>
-  <text x="333" y="216" class="tiny" text-anchor="middle">RESULTS</text>
+  <path d="M310 160H356" class="arrow"/>
+  <path d="M356 196H310" class="arrow"/>
 
-  <rect x="356" y="64" width="248" height="238" rx="8" class="box"/>
+  <rect x="356" y="64" width="248" height="228" rx="8" class="box"/>
   <text x="374" y="90" class="label">Execution plane</text>
   <text x="374" y="108" class="sub">nodes do the work</text>
-  <rect x="374" y="122" width="212" height="34" rx="5" class="box"/>
-  <text x="386" y="144" class="sub">agent · ordered model fallback</text>
-  <rect x="374" y="166" width="212" height="34" rx="5" class="box"/>
-  <text x="386" y="188" class="sub">command · JSON protocol</text>
-  <rect x="374" y="210" width="212" height="34" rx="5" class="box"/>
-  <text x="386" y="232" class="sub">HTTP · explicit host grant</text>
-  <rect x="374" y="254" width="212" height="34" rx="5" class="box"/>
-  <text x="386" y="276" class="sub">Human · packet decision</text>
+  <rect x="374" y="120" width="212" height="34" rx="5" class="box"/>
+  <text x="386" y="142" class="sub">agent · ordered model fallback</text>
+  <rect x="374" y="162" width="212" height="34" rx="5" class="box"/>
+  <text x="386" y="184" class="sub">command · JSON protocol</text>
+  <rect x="374" y="204" width="212" height="34" rx="5" class="box"/>
+  <text x="386" y="226" class="sub">HTTP · explicit host grant</text>
+  <rect x="374" y="246" width="212" height="34" rx="5" class="box"/>
+  <text x="386" y="268" class="sub">Human · packet decision</text>
 
-  <path d="M604 184H650" class="arrow"/>
-  <rect x="650" y="64" width="202" height="238" rx="8" class="box"/>
+  <path d="M604 182H650" class="arrow"/>
+  <rect x="650" y="64" width="202" height="228" rx="8" class="box"/>
   <text x="668" y="90" class="label">Interfaces</text>
   <text x="668" y="108" class="sub">outside the graph</text>
-  <rect x="668" y="122" width="166" height="34" rx="5" class="box"/>
-  <text x="680" y="144" class="sub">private board · Human brief</text>
-  <rect x="668" y="166" width="166" height="34" rx="5" class="box"/>
-  <text x="680" y="188" class="sub">private Web API</text>
-  <rect x="668" y="210" width="166" height="34" rx="5" class="box"/>
-  <text x="680" y="232" class="sub">Git worktree / PR</text>
-  <rect x="668" y="254" width="166" height="34" rx="5" class="box"/>
-  <text x="680" y="276" class="sub">host filesystem</text>
-
-  <text x="48" y="345" class="sub">The graph is data; the engine is the only scheduler. Command and HTTP permissions are external grants, never graph config.</text>
+  <rect x="668" y="120" width="166" height="34" rx="5" class="box"/>
+  <text x="680" y="142" class="sub">private board · Human brief</text>
+  <rect x="668" y="162" width="166" height="34" rx="5" class="box"/>
+  <text x="680" y="184" class="sub">private Web API</text>
+  <rect x="668" y="204" width="166" height="34" rx="5" class="box"/>
+  <text x="680" y="226" class="sub">Git worktree / PR</text>
+  <rect x="668" y="246" width="166" height="34" rx="5" class="box"/>
+  <text x="680" y="268" class="sub">host filesystem</text>
 </svg>
