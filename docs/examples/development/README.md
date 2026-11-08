@@ -1,6 +1,6 @@
 # GitHub 项目本地持续开发
 
-这是 `dsh-auto-workflow`（短名 Auto Workflow）的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求，经模型审查与 Human merge 门禁后集成。示例是应用代码，插件只提供通用调度；没有远端 Issue/PR 服务、聊天监听器或外部审批端点。
+这是 `dsh-auto-workflow`（短名 Auto Workflow）的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 brief，外部 Codex/人 merge PR 后，工作流只验证并清理。示例是应用代码，插件只提供通用调度；没有远端 Issue/聊天监听器或外部审批端点。
 
 **阅读文档不会启动任何操作。** 下面是供操作者检查、替换路径并明确授权后执行的说明，不是对当前仓库或远端的自动操作。首次使用先看 [项目首页](<../../../README.md>)；业务不变量集中在 [流程与保证](<../../workflow-summary.md>)。
 
@@ -8,38 +8,41 @@
 
 | 组件 | 职责 |
 | --- | --- |
-| [workflow.json](<workflow.json>) | 一个 run 中的周期 producer、detached 分支、3+3 工作池与 Human 门禁。 |
+| [workflow.json](<workflow.json>) | 一个 run 中的周期 producer、分支/worktree、3+3 工作池、PR 发布/轮询与 Human brief。 |
 | [store.mjs](<store.mjs>) | 稳定 ID、优先级/FIFO、claim、revision/epoch、审批与反馈。 |
-| [worktrees.mjs](<worktrees.mjs>) | detached worktree、不可变快照/review、本地集成、恢复与受限清理。 |
+| [worktrees.mjs](<worktrees.mjs>) | 每需求分支/attached worktree、单 commit 快照、review、brief 与受限清理。 |
+| [pr.mjs](<pr.mjs>) | push 需求分支、创建/更新自己的 draft PR、标记 ready、轮询外部 merge。 |
 | [driver.mjs](<driver.mjs>) | command 节点使用的 JSON-only CLI。 |
 
 开始前逐项确认：
 
 - Node.js 22.5+、Git、已安装的插件以及可用模型路由。agent 能在指定 worktree 读写、运行项目实际验证命令并本地提交；reviewer 只读审查，不改代码或提交。
-- 目标是已有提交的非 bare 仓库，有本地 Git author identity；自行处理项目 hooks、签名和依赖。示例不会替你禁用 hooks 或配置仓库身份。
-- 选择一个**项目及其 worktree 外部**的绝对、canonical `dataRoot`，不使用 symlink/junction 别名。每个目标仓库只用一个 store，integration lock 不是全机器/跨 store 锁。
-- 集成 checkout 始终处于配置的 `baseBranch`，干净且无进行中的 merge。运行期间不要由其他工具同时改动它。
+- 目标是已有提交的非 bare GitHub clone，有 `origin`、本地 Git author identity，并已 `gh auth login` 或设置 `GITHUB_TOKEN`。需要 `Contents: Write` 和 `Pull requests: Write`；自行处理项目 hooks、签名和依赖。
+- 选择一个**项目及其 worktree 外部**的绝对、canonical `dataRoot`，不使用 symlink/junction 别名。每个目标仓库只用一个 store。
+- 集成 checkout 始终处于配置的 `baseBranch`，干净且无进行中的 merge；外部 merge 后工作流会 fetch 并 fast-forward 本地 base。运行期间不要由其他工具同时改动它。
+- 仓库的 PR 合并方式应为 **merge commit**；squash/rebase 会改变批准 commit 的 SHA，工作流会报错而不是静默接受。
 - 检查图里的 agent prompts，补充目标项目的实际验证命令和限制。示例未固定 provider/model，使用 Host 配置；如需有序候选，按 [插件参考](<../../plugin-summary.md>) 设置 `config.models`。模型任务默认没有截止时间。
 - command/HTTP 默认 deny，先获得用户明确批准；agent 的工具权限另行配置，命令 allowlist 不会替 agent 建立文件系统沙箱。
 
 ## 1. 克隆项目并 materialize 示例
 
-以下 PowerShell 示例使用虚构路径和 `OWNER/PROJECT` 占位符，请先替换。克隆属于明确授权的准备工作；图本身不访问 GitHub。
+以下 PowerShell 示例使用虚构路径和 `OWNER/PROJECT` 占位符，请先替换。克隆、`gh auth` 和 push/开 PR 都属于明确授权的操作。
 
 ```powershell
 git clone https://github.com/OWNER/PROJECT.git C:/work/project
 Set-Location C:/work/project
 git switch -c integration/workflow-batch
+gh auth status
 ```
 
-`integration/workflow-batch` 是**一个共享的本地集成批次分支**。后续 store 的 `baseBranch` 指向它，不是每需求建立一个分支；也不假设可以直接 push 受保护的 `main`。已有仓库可在检查干净状态后选用已有的本地集成分支，无需重新 clone。
+`integration/workflow-batch` 是 PR 的共享 base 分支；每个需求另有自己的 `auto/req-*` 分支，不从 base 之外复制。不要把受保护的 `main` 直接作为可写 base，除非你们明确允许。
 
-从固定 v1.0.0 的源码 checkout 或解压后的发行包取得上表四个文件。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
+从固定 v1.0.0 的源码 checkout 或解压后的发行包取得上表五个文件。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
 
 ```powershell
 $ExampleSource = 'C:/work/auto-workflow-release/docs/examples/development'
 New-Item -ItemType Directory -Force docs/examples/development | Out-Null
-Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/workflow.json" -Destination docs/examples/development
+Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/pr.mjs", "$ExampleSource/workflow.json" -Destination docs/examples/development
 # 检查脚本和提示词，补充项目验证要求后，仅本地提交这些文件
 git add -- docs/examples/development
 git commit -m "Add local development workflow"
@@ -55,11 +58,11 @@ command 节点执行的是固定命令，例如 `node docs/examples/development/
 继续在目标项目根目录运行；以下 `dataRoot` 与项目并列，位于项目外：
 
 ```powershell
-$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","cleanupPolicy":"after-verified-merge","integrationMode":"local"}'
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","cleanupPolicy":"after-verified-merge","integrationMode":"pull-request","prRemote":"origin"}'
 node docs/examples/development/driver.mjs init
 ```
 
-配置一经初始化不可静默更换。`after-verified-merge` 是默认值：验证合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review 和 `cleanedWorktreePath` 保留。`retain` 仅作为需要保留现场时的显式选择。业务 store 采用 `version: 2`，不等于包版本；旧 store 被拒绝，不迁移或重置。为新格式使用新 canonical root，并保留旧数据检查。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。
+配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR，外部 merge 后只验证/清理。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback；不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 仍是 `version: 2`，不等于包版本；旧 detached worktree 数据被拒绝，不迁移或重置。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。
 
 ### 用户 intake
 
@@ -147,11 +150,12 @@ mine-gate → queue-check
 根 `concurrency:6` 被所有节点共享。一个 engineer 节点有三个槽，一个 reviewer 节点有三个槽；**每需求仅一位 reviewer**。命令/miner 也占根容量，不是六个模型槽之外另有无限开销。
 
 1. `route` 让用户需求、挖掘 low 进入准备；挖掘 mid/high 进入 `requirement-human`。Human `reject` 必须有反馈，后续命令落盘后由 analyst 修订**同一个 ID**，递增需求 revision 再评估风险。
-2. `prepare` 创建并保存 detached `worktreePath` 和 `baseRevision`。没有每需求分支。所有初次开发与返修先经 `begin-engineering`：校验当前 revision/旧 epoch，消耗 admission 并增加 `engineeringEpoch`。
-3. engineer 在该 worktree 内实现、运行项目实际验证、提交干净的本地 commit；不得 merge、push、删除 worktree 或编辑业务 JSON。
-4. `snapshot` 使用冻结的 `begin-engineering` 输出校验 revision/epoch，预留 `snapshot-pending` 意图，再冻结 commit/tree/验证说明为不可变 artifact。不能在旧模型回复到达时临时读取新 revision 来绕过校验。
-5. 一位 reviewer 检查精确 artifact/commit 并验证，不改 worktree。`record-review` 复验干净 HEAD 并写入不可变 review。`revise` 先落盘，再回同 ID/worktree 的下一工程轮；有效返修不触发模型回退或通用失败预算，示例未设置自动业务返修上限。
-6. `pass` 后进入 `merge-human`。Human 等待不占 engineer/reviewer 槽，其他 packet 和 producer 仍可继续。
+2. `prepare` 创建并保存 `auto/req-<id>` 分支、attached `worktreePath` 和 `baseRevision`。需求分支和 worktree 一直保留到 cleanup。所有初次开发与返修先经 `begin-engineering`：校验当前 revision/旧 epoch，消耗 admission 并增加 `engineeringEpoch`。
+3. engineer 只在该 worktree/分支实现、运行项目实际验证并提交；不得 merge、push、删除 worktree 或编辑业务 JSON。
+4. `snapshot` 使用冻结的 `begin-engineering` 输出校验 revision/epoch，预留 `snapshot-pending` 意图，把整个分支相对 `baseRevision` 压成一个 commit，再冻结 commit/tree/验证说明为不可变 artifact。不能在旧模型回复到达时临时读取新 revision 来绕过校验。
+5. `publish-pr` 推送该需求分支，并创建/更新**自己的 draft PR**；PR head 始终是刚冻结的单 commit。外部 Codex/人可以提前在 PR 看 diff 和评论，但 draft 不能 merge。
+6. 一位 reviewer 检查精确 artifact/commit 并验证，不改 worktree。`record-review` 复验干净 HEAD 并写入不可变 review。`revise` 先落盘，再回同 ID/分支/worktree/PR 的下一工程轮；有效返修不触发模型回退或通用业务返修上限。
+7. `pass` 后 `brief` 生成结构化 Human brief，并用同一内容更新 PR body，再进入 `merge-human`。Human 等待不占 engineer/reviewer 槽，其他 packet 和 producer 仍可继续。
 
 通过看板或 `auto_workflow_decide` 选择当前 token 声明的 outcome。反馈 output 示例：
 
@@ -161,44 +165,44 @@ mine-gate → queue-check
 
 | `merge-human` outcome | 后果 |
 | --- | --- |
-| `approve` | 批准精确需求 revision、artifact 和 commit，然后本地集成。 |
-| `revise` | 必须反馈；同 ID/worktree 返修，新快照、新 review 后再审批。 |
-| `reject` | 必须反馈；标记拒绝，保留 worktree/产物，不合并、不隐式重试。 |
+| `approve` | 批准精确需求 revision、artifact、commit；随后把自己的 PR 标记 ready 并轮询 merge。 |
+| `revise` | 必须反馈；同 ID/分支/worktree/PR 返修，新单 commit、新快照、新 review 后再审批。 |
+| `reject` | 必须反馈；标记拒绝，保留分支/worktree/PR，不合并、不隐式重试。 |
 
 Human 引擎决定由后续 command 转成业务记录；旧需求 revision 的回应不能批准新规格。不要用新 packet 代替待处理决定，也不要把有效拒绝当成换模型的理由。完整身份与修订约束见 [流程与保证](<../../workflow-summary.md>)。
 
-## 5. 本地集成、冲突与远端边界
+## 5. PR 发布、外部 merge 与本地 fallback
 
-`integrate` 节点并发为 1，另有 store 级 integration lock。执行前必须有当前 artifact 的通过 review 和 Human 批准、原本干净的需求 HEAD，以及位于配置 baseBranch 的干净集成 checkout。
+`publish-pr`/`ready-pr`/`check-pr` 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；ready 前必须有精确 Human 批准；check 只轮询工作流自己记录的 `prNumber`，不会搜索其他 PR。
 
-合并前枚举 ignored 数据，检查它与批准 tree 的路径碰撞，包括文件/目录前缀以及适用时的大小写折叠；有碰撞则保留目标和数据，不执行 merge。先自行保存/移动这些数据，再显式重试。
+### 正常 PR 路径
 
-正常路径只执行本地 `git merge --no-ff --no-edit <approved commit>`。成功后复验干净 checkout 和已批准 commit 的祖先关系，记录 `merged` / `integration.state:verified`。Git hooks 仍是可信项目代码；不要同时外部修改目标。
+1. 第一次 snapshot 后 push `auto/req-<id>`，创建 draft PR，base 为配置的 `baseBranch`；
+2. review/rework 继续更新同一分支/PR，并 force-push 新的单 commit；
+3. Human `approve` 后 `ready-pr` 调 GitHub 把 PR 标记 ready；
+4. Codex/你在 GitHub 审核并 merge；
+5. `check-pr` 每 30 秒查询该 PR。看到 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base、验证批准 commit 是祖先，记录 `merged` 并进入 cleanup；
+6. PR 被关闭未合并时回到同一需求工程返修，不自动本地 merge。
 
-### 外部 PR 模式
+仓库应使用 **merge commit**。squash/rebase 会改变批准 commit 的 SHA，`check-pr` 会明确报错，而不是悄悄放宽绑定。
 
-初始化时选择：
+### 本地 fallback
+
+初始化时显式选择：
 
 ```json
-{ "integrationMode": "external-pr" }
+{ "integrationMode": "local" }
 ```
 
-这个模式不自行 merge。Human merge 批准后，`integrate` 只检查**本地已更新的 `baseBranch` checkout** 是否已包含批准 commit：
+本地 fallback 跳过 PR 发布，Human 批准后走原有 `integrate`（含冲突自动 abort 和返修）。它只用于没有 GitHub remote/token 的隔离验收；正常开发不要和 PR 模式混用。
 
-- 尚未包含：返回 `external-pending`，`external-gate` 每 30 秒重试；
-- 已包含：记录 `integration.state:external-verified`，进入默认 cleanup。
+PR 被外部 close 或 merge 失败不会被自动重放。先检查 PR/分支/worktree 和业务状态，再显式续接。
 
-外部操作者/CI 负责 push、开 PR、在 GitHub 上 merge，并在 merge 后把本地 `baseBranch` fetch/更新到包含该提交的状态。示例图不调用 GitHub API、不 push、不开 PR，也不会轮询远端；本地 checkout 没更新时会一直等待。审批、review 和精确 commit 绑定与本地模式相同。
-
-若发生真实 merge 冲突，`integrate` 会保存冲突文件/错误/pre-merge HEAD，执行 `git merge --abort`，复核目标恢复干净，清除旧 merge approval，并把同一需求/同一 worktree 送回 `begin-engineering`。这是业务 `revise` 边，不是模型失败，也不是自动重试 merge；下一次仍须新 snapshot、review 和 Human 批准。
-
-其他项若因共享目标不干净或 ignored 碰撞而失败，不自动重放。先查其运行与业务状态，再明确选择续接阶段。
-
-**本图不 push、不开 PR、不远端 merge、不部署。** 如要把成果交到 GitHub，先复核整个 `integration/workflow-batch`，取得针对具体 remote/branch/操作的明确授权，再由操作者手动 push 并为这个**共享批次分支**开 PR。仓库的保护分支、远端 CI 和最终 merge 规则继续适用，不默认直接 push protected `main`，也不为每需求创建远端分支。
+**工作流会 push 自己的需求分支并创建/更新 PR，但不会 merge 远端、不会批准 GitHub PR、不会部署。** 仓库保护分支、CI 和 merge 规则继续适用。
 
 ## 6. 保留与清理
 
-默认 `after-verified-merge`：验证合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件。删除前仍核对批准 commit 在祖先链、worktree HEAD 未变，然后用受控的 `git worktree remove --force` 删除；提交、不可变 artifact/review 和 `cleanedWorktreePath` 记录保留。
+默认 `after-verified-merge`：验证合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件。删除前仍核对批准 commit 在祖先链、worktree HEAD 未变，然后用受控的 `git worktree remove --force` 删除，再删除本地 `auto/req-*` 分支；提交、不可变 artifact/review、PR 引用和 `cleanedWorktreePath`/`cleanedBranch` 记录保留。
 
 如果项目确实需要保留现场，可以在初始化时显式选择 `retain`；这是例外，不是默认。批量或逐项清理仍可用原 claimed item 的引用与 `claimId` 显式请求：
 
@@ -207,7 +211,7 @@ $env:DSH_WORKFLOW_INPUT = '{"dataRef":"C:/work/project-workflow-data/requirement
 node docs/examples/development/driver.mjs cleanup
 ```
 
-未合并、拒绝、冲突、等待或未验证的 worktree 不清理。需求 JSON、不可变产物/review、清理记录保留；不存在每需求分支可删。
+未合并、拒绝、冲突、等待或未验证的 worktree 不清理；保留分支/PR 供继续返修。需求 JSON、不可变产物/review 和清理记录保留。
 
 ## 恢复与排障
 
@@ -237,7 +241,7 @@ snapshot 发布中断可留下 `status:snapshot-pending` 与精确 `pendingSnaps
 }
 ```
 
-示意数字必须替换为**保留意图对应的真实值**，不能把旧回复改成新轮参数。该命令重新校验干净 detached HEAD/tree、revision、epoch；已存在 artifact 必须逐项匹配且不覆盖，没有发布的只能完成那份保留 artifact。成功写入对账记录并进入 reviewing，**不会**授予 review/merge 批准。
+示意数字必须替换为**保留意图对应的真实值**，不能把旧回复改成新轮参数。该命令重新校验干净的需求分支 HEAD/tree、revision、epoch；已存在 artifact 必须逐项匹配且不覆盖，没有发布的只能完成那份保留 artifact。成功写入对账记录并进入 reviewing，**不会**授予 review/merge 批准。
 
 检查失败 packet 后，用命令返回的 artifact envelope 显式 enqueue 到 `review-input`，不要重跑 engineer/snapshot。这个 reconciliation 是单独 CLI 操作，不是自动图边。
 
@@ -255,7 +259,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 
 | Stage | 额外输入 / 主要行为 |
 | --- | --- |
-| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（`local` 或 `external-pr`）；初始化固定配置并写入 baseline discovery seeds。 |
+| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）；初始化固定配置并写入 baseline discovery seeds。 |
 | `requirement` / `seed` | `dataRoot` 与 `requirement` / `seed` 对象；显式 intake。seed 可带 `origin`、`category`、`relatedRequirementId`；可选，不强制。 |
 | `claim` / `seed-batch` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；返回 ready items 或 idle。 |
 | `queue-check` | `dataRoot`、`maxPending`；返回 `mine` 或 `skip`，统计待实现（含 engineering）需求。 |
@@ -263,15 +267,19 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | `route` | claimed item；ready 或 needs_approval。 |
 | `requirement-decision` | 冻结 `expectedRevision`、`decision`，reject 必须 note；revision 绑定决定。 |
 | `revise-proposal` | `proposal` 含 `expectedRevision`、title、description、risk；同 ID revision+1。 |
-| `prepare` / `begin-engineering` | 准备 detached worktree；校验 envelope `revision` / 旧 `engineeringEpoch` 后进入新轮。 |
-| `snapshot` | 冻结 `expectedRevision`、`engineeringEpoch`；非空字符串 `summary`、`verification`；不可变 artifact/commit。 |
+| `prepare` / `begin-engineering` | 创建 `auto/req-*` 分支和 attached worktree；校验 envelope `revision` / 旧 `engineeringEpoch` 后进入新轮。 |
+| `snapshot` | 冻结 `expectedRevision`、`engineeringEpoch`；非空字符串 `summary`、`verification`；把分支压成单 commit，写不可变 artifact/commit。 |
 | `reconcile-snapshot` | `decision:finalize`、冻结 revision/epoch、operator note；仅完成已检查意图。 |
+| `publish-pr` | 推送需求分支并创建/更新自己的 draft PR；local fallback 返回 `skipped`。 |
 | `review-input` | 当前 `artifactRef` / `commit`；生成冻结 review 输入，也是对账后的续接入口。 |
 | `record-review` | 精确 artifact/commit、`decision:pass\|revise`，非空字符串 summary/verification/reviewer。 |
+| `brief` | pass 后生成 Human/PR 共用的结构化 brief，并更新 PR body。 |
 | `merge-decision` | 当前 artifact、decision，返修/拒绝需反馈；精确产物批准。 |
-| `integrate` | 已 Human 批准的 item；本地模式 merged / 冲突自动 abort 后 revise；external-pr 模式 merged 或 external-pending。 |
+| `integration-route` | 读取 store 配置，返回 `pr` 或 `local`。 |
+| `ready-pr` / `check-pr` | 标记自己的 PR ready；轮询同一 `prNumber`，返回 `merged`/`waiting`/`closed`。 |
+| `integrate` | 仅 local fallback：本地 merged / 冲突自动 abort 后 revise。 |
 | `recover-integration` | 仅异常兜底：操作者已手工恢复 Git 后，`decision:resolved\|aborted`、note；不在主图。 |
-| `cleanup` | 默认 `after-verified-merge` 自动强删已合并 worktree；`retain` 是显式例外。 |
+| `cleanup` | 默认 `after-verified-merge` 自动强删已合并 worktree，并删除本地需求分支；`retain` 是显式例外。 |
 | `status` / `inspect` | `{dataRoot}` / item envelope；有界业务状态与引用。 |
 
 ## 验证与限制
@@ -282,6 +290,6 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 npm test
 ```
 
-[示例测试](https://github.com/lyingloong/dsh-auto-workflow/blob/main/tests/development-example.test.mjs) 与 [安全回归](https://github.com/lyingloong/dsh-auto-workflow/blob/main/tests/audit-example.test.mjs) 使用可丢弃的真实本地 Git 仓库/worktree，覆盖准入、revision/epoch、3+3 并发、反复 review、Human 反馈、busy、backlog 水位、自动冲突 abort、snapshot reconciliation 和默认清理；自动回归不调用付费模型或远端服务。实际运行仍需要有效模型工具、真实输入及项目专属验证。
+[示例测试](https://github.com/lyingloong/dsh-auto-workflow/blob/main/tests/development-example.test.mjs) 与 [安全回归](https://github.com/lyingloong/dsh-auto-workflow/blob/main/tests/audit-example.test.mjs) 使用可丢弃的真实本地 Git 仓库/worktree、本地 bare remote 和 test-only fake `gh`，覆盖准入、revision/epoch、3+3 并发、分支/单 commit、draft PR、brief、external merge、PR close、busy、backlog 水位、snapshot reconciliation 和默认清理；自动回归不调用付费模型或真实 GitHub。实际运行仍需要有效模型工具、`gh` 授权、真实输入及项目专属验证。
 
 这不是多 Host 数据库、身份认证服务或恶意文件系统沙箱。操作者负责可信调用者、数据备份、保留期限、项目适配以及经明确授权的远端发布；不要把“持续运行”解释为自动恢复一切或无需人工决策。

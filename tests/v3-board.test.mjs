@@ -210,6 +210,26 @@ test('Human pending has a dedicated detail view with input and outcomes', async 
   assert.match(get('humanDetailBody').innerHTML, /data-outcome="approve"/);
 });
 
+test('Human detail renders a structured brief before raw input', async () => {
+  const brief = {
+    kind: 'merge-brief',
+    requirement: { id: 'req-brief', title: 'Fix the thing', description: 'Actual requirement', risk: 'mid', revision: 2 },
+    change: { summary: 'Changed exactly one module', verification: 'npm test passed', commit: 'abc123' },
+    review: { decision: 'pass', summary: 'No blocking findings', verification: 'reviewed diff', reviewer: 'reviewer-1' },
+    risks: ['Edge case remains untested'],
+    pr: { number: 7, url: 'https://example.invalid/pull/7' },
+  };
+  const { api, get } = board(async () => ({ ok: true, json: async () => ({ value: { brief } }) }));
+  api.setState(fixture()); api.renderHuman();
+  await api.openHumanDetail('human-token');
+  const markup = get('humanDetailBody').innerHTML;
+  assert.match(markup, /做了什么/);
+  assert.match(markup, /审查结论/);
+  assert.match(markup, /Edge case remains untested/);
+  assert.match(markup, /查看原始输入/);
+  assert.match(markup, /https:\/\/example.invalid\/pull\/7/);
+});
+
 test('generic queue remains per node and does not couple Human waits to unrelated packets', () => {
   const { api, get } = board(), state = fixture();
   api.setState(state); api.renderQueue(); api.renderHuman();

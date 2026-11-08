@@ -27,13 +27,13 @@ dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow
 
 ## 快速使用：持续开发一个本地 GitHub clone
 
-唯一主示例是 [GitHub 项目本地持续开发](<docs/examples/development/README.md>)，不是远端 Issue/PR 机器人。
+唯一主示例是 [GitHub 项目持续开发](<docs/examples/development/README.md>)：工作流自己维护每需求分支、worktree 和 PR，外部 Codex/人可以审核并 merge 该 PR。
 
-1. **准备项目**：克隆你有权修改的 GitHub 仓库，在本地建立一个共享集成批次分支；把示例脚本 materialize 到项目内并本地提交，使 checkout 干净。选择项目外的绝对、canonical `dataRoot`。
+1. **准备项目**：克隆你有权修改的 GitHub 仓库，配置 `origin` 和 `gh auth login`（或 `GITHUB_TOKEN`）；把示例脚本 materialize 到项目内并本地提交，使 checkout 干净。选择项目外的绝对、canonical `dataRoot`。
 2. **输入真实需求**：初始化业务存储（会放入 baseline discovery seeds），提交用户需求；可选用 `driver seed` 补充相关证据 seed。用户需求优先级固定为 `0`；示例不监听所有聊天，也不自动抓取 GitHub Issues。
 3. **授权并定义**：检查 [示例图](<docs/examples/development/workflow.json>) 与模型提示词，明确批准命令 allowlist，再调用 `auto_workflow_define`。HTTP 默认拒绝；agent 工具权限另行控制。
 4. **开始运行**：`auto_workflow_start` 绑定项目的绝对 `cwd` 和 `{ "dataRoot": "…" }`；`auto_workflow_run` 挂载运行。在同一 run 中向 `mine-gate` **仅 enqueue 一次** producer，后续需求继续送入现有运行。
-5. **人工决策**：在会话顶部的 **工作流** 看板或 `auto_workflow_decide` 处理具体 Human 项。默认本地集成；也可配置 `integrationMode:"external-pr"`，由外部 PR 在 GitHub merge 后只验证本地已更新的 base 分支，不自行 merge。验证合并后默认清理 worktree（含开发期临时文件），提交和不可变记录保留。远端 push/PR 必须另行获得明确授权并手动执行。
+5. **人工/外部审核**：每个需求在 `auto/req-<id>` 分支和独立 worktree 中开发；第一次 snapshot 后推送分支并创建 draft PR。看板 Human 详情显示结构化 brief，批准后 PR 标记 ready；Codex/你在 GitHub merge 后，工作流只验证并清理 worktree，不自行 merge。默认 `after-verified-merge` 会删除 worktree（含开发期临时文件），提交和不可变记录保留。
 
 ### 主业务图
 
@@ -43,24 +43,25 @@ flowchart TD
   S[已有证据 seeds] --> M[周期 producer / 挖掘]
   M --> Q
   Q --> R{需求来源与风险}
-  R -->|用户 / 挖掘 low| W[每需求一个保留的 detached worktree]
+  R -->|用户 / 挖掘 low| W[每需求一个 auto/req-* 分支和 attached worktree]
   R -->|挖掘 mid / high| H[Human 需求审批]
   H -->|approve| W
   H -->|reject + 反馈| A[同 ID 修订需求]
   A --> R
   W --> E[engineer 池 · 最多 3]
-  E --> I[冻结 revision / epoch / commit]
-  I --> V[reviewer 池 · 最多 3，每需求一位]
+  E --> I[冻结 revision / epoch / one commit]
+  I --> P[push 分支并创建 draft PR]
+  P --> V[reviewer 池 · 最多 3，每需求一位]
   V -->|revise| E
-  V -->|pass| G[Human merge 门禁]
+  V -->|pass| G[Human brief / PR 门禁]
   G -->|revise| E
-  G -->|reject| K[保留，不合并]
-  G -->|approve 精确产物| L[串行本地集成 · 最多 1]
-  L -->|成功| T[验证合并 · 默认清理 worktree]
-  L -->|冲突| X[自动 abort · 同 worktree 返修]
+  G -->|reject| K[保留分支/worktree/PR]
+  G -->|approve| L[标记自己的 PR ready]
+  L --> X[Codex/人 external merge]
+  X --> T[验证合并 · 默认清理 worktree]
 ```
 
-根并发上限为 **6**；命令和挖掘也共享这六个槽位。3+3 是两个工作池上限，不是每项需求三位 reviewer。返修保留同一需求 ID 与 `worktreePath`；**不创建每需求分支**。完整语义见 [业务流程与保证](<docs/workflow-summary.md>)。
+根并发上限为 **6**；命令和挖掘也共享这六个槽位。3+3 是两个工作池上限，不是每项需求三位 reviewer。返修保留同一需求 ID、分支、worktree 和 PR；snapshot 把分支压成一个 commit。完整语义见 [业务流程与保证](<docs/workflow-summary.md>)。
 
 ## 七个工具
 
@@ -87,7 +88,7 @@ flowchart TD
 - 插件负责通用调度和引用；需求优先级、Git worktree、审查与合并策略属于示例业务代码。
 - command/HTTP 权限默认 deny。命令 allowlist 不是文件系统沙箱，也不替代 agent 工具权限。
 - 暂停和禁用节点不会取消在途工作；Stop 不等于回滚。失败或中断后先检查副作用，再显式恢复或新建 run。
-- 单 Host、本地文件锁；不是分布式队列、外部审批服务或 exactly-once Git/HTTP 事务。不自动 push、开 PR、合并远端或部署，也不默认直接推送受保护的 `main`。
+- 单 Host、本地文件锁；不是分布式队列、外部审批服务或 exactly-once Git/HTTP 事务。工作流会 push 自己的需求分支并创建/更新 PR，但不会 merge 远端、不会自行批准 GitHub PR，也不会部署。
 - 包版本 `1.0.0`、定义 `apiVersion: 2`、运行状态 `version: 3`、示例业务存储 `version: 2` 是不同层的版本号，不要求相同。废弃开发序列与迁移边界见 [更新记录](<CHANGELOG.md>)。
 
 已验证范围、真实模型执行概况与限制集中在 [验证说明](<docs/verification.md>)。从源码 checkout 运行完整回归：

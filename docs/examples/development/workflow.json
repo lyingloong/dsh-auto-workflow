@@ -7,246 +7,1099 @@
   "historyLimit": 100,
   "nodes": [
     {
-      "id": "dispatch", "type": "command", "title": "Admit queued items", "concurrency": 1,
-      "inputs": { "dataRoot": "$input.dataRoot", "batchSize": 3 },
-      "config": { "command": "node docs/examples/development/driver.mjs claim", "json": true }
-    },
-    {
-      "id": "work-fanout", "type": "fanout", "title": "Queue work packets",
-      "config": { "items": "$prev.items", "target": "route", "detached": true }
-    },
-    {
-      "id": "mine-gate", "type": "gate", "title": "Mining switch", "concurrency": 1,
-      "inputs": { "dataRoot": "$input.dataRoot" }, "config": { "delayMs": 60000 }
-    },
-    {
-      "id": "queue-check", "type": "command", "title": "Check implementation backlog", "concurrency": 1,
-      "inputs": { "dataRoot": "$input.dataRoot", "maxPending": 3 },
-      "config": { "command": "node docs/examples/development/driver.mjs queue-check", "json": true }
-    },
-    {
-      "id": "seed-batch", "type": "command", "title": "Claim seed batch", "concurrency": 1,
-      "inputs": { "dataRoot": "$input.dataRoot", "batchSize": 3 },
-      "config": { "command": "node docs/examples/development/driver.mjs seed-batch", "json": true }
-    },
-    {
-      "id": "seed-fanout", "type": "fanout", "title": "Queue mining packets",
-      "config": { "items": "$prev.items", "target": "miner", "detached": true }
-    },
-    {
-      "id": "producer-dispatch", "type": "command", "title": "Admit priority queue", "concurrency": 1,
-      "inputs": { "dataRoot": "$input.dataRoot", "batchSize": 3 },
-      "config": { "command": "node docs/examples/development/driver.mjs claim", "json": true }
-    },
-    {
-      "id": "producer-work", "type": "fanout", "title": "Queue found work",
-      "config": { "items": "$prev.items", "target": "route", "detached": true }
-    },
-    {
-      "id": "miner", "type": "agent", "title": "Mine one seed", "role": "analyst", "concurrency": 1,
+      "id": "dispatch",
+      "type": "command",
+      "title": "Admit queued items",
+      "concurrency": 1,
+      "inputs": {
+        "dataRoot": "$input.dataRoot",
+        "batchSize": 3
+      },
       "config": {
-        "cwd": "$input.cwd", "outcomes": ["proposal", "idle"],
+        "command": "node docs/examples/development/driver.mjs claim",
+        "json": true
+      }
+    },
+    {
+      "id": "work-fanout",
+      "type": "fanout",
+      "title": "Queue work packets",
+      "config": {
+        "items": "$prev.items",
+        "target": "route",
+        "detached": true
+      }
+    },
+    {
+      "id": "mine-gate",
+      "type": "gate",
+      "title": "Mining switch",
+      "concurrency": 1,
+      "inputs": {
+        "dataRoot": "$input.dataRoot"
+      },
+      "config": {
+        "delayMs": 60000
+      }
+    },
+    {
+      "id": "queue-check",
+      "type": "command",
+      "title": "Check implementation backlog",
+      "concurrency": 1,
+      "inputs": {
+        "dataRoot": "$input.dataRoot",
+        "maxPending": 3
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs queue-check",
+        "json": true
+      }
+    },
+    {
+      "id": "seed-batch",
+      "type": "command",
+      "title": "Claim seed batch",
+      "concurrency": 1,
+      "inputs": {
+        "dataRoot": "$input.dataRoot",
+        "batchSize": 3
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs seed-batch",
+        "json": true
+      }
+    },
+    {
+      "id": "seed-fanout",
+      "type": "fanout",
+      "title": "Queue mining packets",
+      "config": {
+        "items": "$prev.items",
+        "target": "miner",
+        "detached": true
+      }
+    },
+    {
+      "id": "producer-dispatch",
+      "type": "command",
+      "title": "Admit priority queue",
+      "concurrency": 1,
+      "inputs": {
+        "dataRoot": "$input.dataRoot",
+        "batchSize": 3
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs claim",
+        "json": true
+      }
+    },
+    {
+      "id": "producer-work",
+      "type": "fanout",
+      "title": "Queue found work",
+      "config": {
+        "items": "$prev.items",
+        "target": "route",
+        "detached": true
+      }
+    },
+    {
+      "id": "miner",
+      "type": "agent",
+      "title": "Mine one seed",
+      "role": "analyst",
+      "concurrency": 1,
+      "config": {
+        "cwd": "$input.cwd",
+        "outcomes": [
+          "proposal",
+          "idle"
+        ],
         "prompt": "Mine one seed for genuinely useful, varied work. Read the seed JSON at input.dataRef, the requirement queue under input.dataRoot/requirements, recent commits, tests, docs and relevant source in cwd. First generate 3-5 candidate directions, covering correctness/regression, reliability/error handling, performance, UX/accessibility, test gaps/observability, security/data safety and maintainability/tooling. For each candidate state evidence, impact, risk and the smallest verifiable acceptance. Discard duplicates of existing requirements, weak or evidence-free ideas, pure style preferences and anything not independently shippable. Then choose the single highest-value concrete change. Seeds with origin=baseline are discovery directions, not proof: return idle if the repository does not support a concrete proposal. Do not invent another seed or requirement id. Do not edit the repository or business store and do not invoke approval services. Risk is your assessment: low (local reversible), mid (cross-module/uncertain), high (security/destructive/external). Return outcome proposal with output {proposal:{title,description,risk,priority:1..9,tags:[]}}, or outcome idle with output {proposal:null}. The record command derives the same stable requirement id from this seed. No default task deadline is set."
       }
     },
     {
-      "id": "record-proposal", "type": "command", "title": "Persist mined item", "concurrency": 1,
-      "inputs": { "dataRef": "$input.dataRef", "seedId": "$input.seedId", "claimId": "$input.claimId", "proposal": "$prev.proposal" },
-      "config": { "command": "node docs/examples/development/driver.mjs record-proposal", "json": true }
-    },
-    {
-      "id": "route", "type": "command", "title": "Apply risk policy", "concurrency": 1,
-      "config": { "command": "node docs/examples/development/driver.mjs route", "json": true }
-    },
-    {
-      "id": "requirement-human", "type": "human", "title": "Requirement pending",
-      "config": { "title": "Approve mid/high risk requirement or reject with feedback", "outcomes": ["approve", "reject"] }
-    },
-    {
-      "id": "approve-requirement", "type": "command", "title": "Record approval",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "expectedRevision": "$nodes.route.output.revision", "decision": "approve", "note": "$prev.note", "actor": "$prev.actor" },
-      "config": { "command": "node docs/examples/development/driver.mjs requirement-decision", "json": true }
-    },
-    {
-      "id": "reject-requirement", "type": "command", "title": "Record feedback",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "expectedRevision": "$nodes.route.output.revision", "decision": "reject", "note": "$prev.note", "actor": "$prev.actor" },
-      "config": { "command": "node docs/examples/development/driver.mjs requirement-decision", "json": true }
-    },
-    {
-      "id": "analyst-revise", "type": "agent", "title": "Revise same requirement", "role": "analyst", "concurrency": 1,
+      "id": "record-proposal",
+      "type": "command",
+      "title": "Persist mined item",
+      "concurrency": 1,
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "seedId": "$input.seedId",
+        "claimId": "$input.claimId",
+        "proposal": "$prev.proposal"
+      },
       "config": {
-        "cwd": "$input.cwd", "outcomes": ["complete"],
+        "command": "node docs/examples/development/driver.mjs record-proposal",
+        "json": true
+      }
+    },
+    {
+      "id": "route",
+      "type": "command",
+      "title": "Apply risk policy",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs route",
+        "json": true
+      }
+    },
+    {
+      "id": "requirement-human",
+      "type": "human",
+      "title": "Requirement pending",
+      "config": {
+        "title": "Approve mid/high risk requirement or reject with feedback",
+        "outcomes": [
+          "approve",
+          "reject"
+        ]
+      }
+    },
+    {
+      "id": "approve-requirement",
+      "type": "command",
+      "title": "Record approval",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "expectedRevision": "$nodes.route.output.revision",
+        "decision": "approve",
+        "note": "$prev.note",
+        "actor": "$prev.actor"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs requirement-decision",
+        "json": true
+      }
+    },
+    {
+      "id": "reject-requirement",
+      "type": "command",
+      "title": "Record feedback",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "expectedRevision": "$nodes.route.output.revision",
+        "decision": "reject",
+        "note": "$prev.note",
+        "actor": "$prev.actor"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs requirement-decision",
+        "json": true
+      }
+    },
+    {
+      "id": "analyst-revise",
+      "type": "agent",
+      "title": "Revise same requirement",
+      "role": "analyst",
+      "concurrency": 1,
+      "config": {
+        "cwd": "$input.cwd",
+        "outcomes": [
+          "complete"
+        ],
         "prompt": "Read input.dataRef, especially current revision and human requirement feedback. Revise this SAME requirement; never create a new id and never edit store files directly. Return output {proposal:{expectedRevision:<current revision>,title,description,risk:low|mid|high,tags:[]}}. Explain intended behavior in description and honor rejection feedback. The command persists revision+1 on the original id and retains its worktree."
       }
     },
     {
-      "id": "revise-proposal", "type": "command", "title": "Persist same-id revision",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "proposal": "$prev.proposal" },
-      "config": { "command": "node docs/examples/development/driver.mjs revise-proposal", "json": true }
-    },
-    {
-      "id": "prepare", "type": "command", "title": "Prepare retained worktree", "concurrency": 1,
-      "config": { "command": "node docs/examples/development/driver.mjs prepare", "json": true }
-    },
-    {
-      "id": "begin-engineering", "type": "command", "title": "Admit one engineering epoch", "concurrency": 1,
-      "config": { "command": "node docs/examples/development/driver.mjs begin-engineering", "json": true }
-    },
-    {
-      "id": "engineer", "type": "agent", "title": "Engineers 0–3", "role": "engineer", "concurrency": 3,
+      "id": "revise-proposal",
+      "type": "command",
+      "title": "Persist same-id revision",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "proposal": "$prev.proposal"
+      },
       "config": {
-        "cwd": "$input.cwd", "outcomes": ["complete"],
+        "command": "node docs/examples/development/driver.mjs revise-proposal",
+        "json": true
+      }
+    },
+    {
+      "id": "prepare",
+      "type": "command",
+      "title": "Prepare retained worktree",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs prepare",
+        "json": true
+      }
+    },
+    {
+      "id": "begin-engineering",
+      "type": "command",
+      "title": "Admit one engineering epoch",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs begin-engineering",
+        "json": true
+      }
+    },
+    {
+      "id": "engineer",
+      "type": "agent",
+      "title": "Engineers 0–3",
+      "role": "engineer",
+      "concurrency": 3,
+      "config": {
+        "cwd": "$input.cwd",
+        "outcomes": [
+          "complete"
+        ],
         "prompt": "Work ONLY in input.cwd (the retained per-requirement Git worktree). Read input.dataRef for the stable requirement, current revision, previous immutable implementation/reviews and human feedback. Implement and run the repository's actual verification. Commit the implementation locally in this worktree so HEAD is clean. Never merge, push, delete worktrees, change base-branch checkout, edit business JSON, spawn agents, or call approval services. Return output {summary:<non-empty string describing concise changes>,verification:<non-empty string containing actual commands and results, NOT an array or object>}. Snapshot command will pin commit/tree and requirement revision; false success will fail downstream. No default task deadline."
       }
     },
     {
-      "id": "snapshot", "type": "command", "title": "Freeze implementation",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "expectedRevision": "$nodes.begin-engineering.output.revision", "engineeringEpoch": "$nodes.begin-engineering.output.engineeringEpoch", "summary": "$prev.summary", "verification": "$prev.verification" },
-      "config": { "command": "node docs/examples/development/driver.mjs snapshot", "json": true }
-    },
-    {
-      "id": "review-input", "type": "command", "title": "Pin review admission", "concurrency": 1,
-      "config": { "command": "node docs/examples/development/driver.mjs review-input", "json": true }
-    },
-    {
-      "id": "reviewer", "type": "agent", "title": "Reviewers 0–3", "role": "reviewer", "concurrency": 3,
+      "id": "snapshot",
+      "type": "command",
+      "title": "Freeze implementation",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "expectedRevision": "$nodes.begin-engineering.output.revision",
+        "engineeringEpoch": "$nodes.begin-engineering.output.engineeringEpoch",
+        "summary": "$prev.summary",
+        "verification": "$prev.verification"
+      },
       "config": {
-        "cwd": "$input.cwd", "outcomes": ["pass", "revise"],
+        "command": "node docs/examples/development/driver.mjs snapshot",
+        "json": true
+      }
+    },
+    {
+      "id": "review-input",
+      "type": "command",
+      "title": "Pin review admission",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs review-input",
+        "json": true
+      }
+    },
+    {
+      "id": "reviewer",
+      "type": "agent",
+      "title": "Reviewers 0–3",
+      "role": "reviewer",
+      "concurrency": 3,
+      "config": {
+        "cwd": "$input.cwd",
+        "outcomes": [
+          "pass",
+          "revise"
+        ],
         "prompt": "You are the ONE reviewer assigned this item from a pool of three. Read input.artifactRef, the requirement JSON at input.dataRef, and pinned commit input.commit. Review ONLY that immutable artifact, run appropriate verification, and do not edit/commit the worktree or store. Return outcome pass or revise with output {decision:<same outcome>,summary:<non-empty string of findings or rationale>,verification:<non-empty string containing actual commands and results, NOT an array or object>,reviewer:<non-empty string reviewer label>}. Never approve merge or invoke external approval services. A valid negative review goes to the SAME engineer worktree/id, not model failover."
       }
     },
     {
-      "id": "record-review", "type": "command", "title": "Freeze review revision",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "artifactRef": "$nodes.review-input.output.artifactRef", "commit": "$nodes.review-input.output.commit", "decision": "$nodes.reviewer.outcome", "summary": "$prev.summary", "verification": "$prev.verification", "reviewer": "$prev.reviewer" },
-      "config": { "command": "node docs/examples/development/driver.mjs record-review", "json": true }
+      "id": "record-review",
+      "type": "command",
+      "title": "Freeze review revision",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "artifactRef": "$nodes.review-input.output.artifactRef",
+        "commit": "$nodes.review-input.output.commit",
+        "decision": "$nodes.reviewer.outcome",
+        "summary": "$prev.summary",
+        "verification": "$prev.verification",
+        "reviewer": "$prev.reviewer"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs record-review",
+        "json": true
+      }
     },
     {
-      "id": "merge-human", "type": "human", "title": "Human pending pool",
-      "config": { "title": "Approve this exact reviewed artifact for local merge, request changes, or reject (retain worktree)", "outcomes": ["approve", "revise", "reject"] }
+      "id": "merge-human",
+      "type": "human",
+      "title": "Human pending pool",
+      "config": {
+        "title": "Approve this exact reviewed PR for ready/merge, request changes, or reject (retain worktree/PR)",
+        "outcomes": [
+          "approve",
+          "revise",
+          "reject"
+        ]
+      }
     },
     {
-      "id": "approve-merge", "type": "command", "title": "Record merge approval",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "artifactRef": "$nodes.record-review.output.artifactRef", "decision": "approve", "note": "$prev.note", "actor": "$prev.actor" },
-      "config": { "command": "node docs/examples/development/driver.mjs merge-decision", "json": true }
+      "id": "approve-merge",
+      "type": "command",
+      "title": "Record merge approval",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "artifactRef": "$nodes.record-review.output.artifactRef",
+        "decision": "approve",
+        "note": "$prev.note",
+        "actor": "$prev.actor"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs merge-decision",
+        "json": true
+      }
     },
     {
-      "id": "request-changes", "type": "command", "title": "Keep worktree; revise",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "artifactRef": "$nodes.record-review.output.artifactRef", "decision": "revise", "note": "$prev.note", "actor": "$prev.actor" },
-      "config": { "command": "node docs/examples/development/driver.mjs merge-decision", "json": true }
+      "id": "request-changes",
+      "type": "command",
+      "title": "Keep worktree; revise",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "artifactRef": "$nodes.record-review.output.artifactRef",
+        "decision": "revise",
+        "note": "$prev.note",
+        "actor": "$prev.actor"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs merge-decision",
+        "json": true
+      }
     },
     {
-      "id": "reject-merge", "type": "command", "title": "Reject; retain worktree",
-      "inputs": { "dataRef": "$input.dataRef", "claimId": "$input.claimId", "artifactRef": "$nodes.record-review.output.artifactRef", "decision": "reject", "note": "$prev.note", "actor": "$prev.actor" },
-      "config": { "command": "node docs/examples/development/driver.mjs merge-decision", "json": true }
+      "id": "reject-merge",
+      "type": "command",
+      "title": "Reject; retain worktree",
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "artifactRef": "$nodes.record-review.output.artifactRef",
+        "decision": "reject",
+        "note": "$prev.note",
+        "actor": "$prev.actor"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs merge-decision",
+        "json": true
+      }
     },
     {
-      "id": "integrate", "type": "command", "title": "Integrate one at a time", "concurrency": 1,
-      "config": { "command": "node docs/examples/development/driver.mjs integrate", "json": true }
+      "id": "cleanup",
+      "type": "command",
+      "title": "Explicit cleanup policy",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs cleanup",
+        "json": true
+      }
     },
     {
-      "id": "external-gate", "type": "gate", "title": "Wait for external PR merge", "concurrency": 1,
-      "config": { "delayMs": 30000 }
+      "id": "busy-dispatch",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
     },
     {
-      "id": "cleanup", "type": "command", "title": "Explicit cleanup policy", "concurrency": 1,
-      "config": { "command": "node docs/examples/development/driver.mjs cleanup", "json": true }
+      "id": "busy-queue-check",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
     },
-    { "id": "busy-dispatch", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-queue-check", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-seed-batch", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-producer-dispatch", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-record-proposal", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-route", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-approve-requirement", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-reject-requirement", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-revise-proposal", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-prepare", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-begin-engineering", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-snapshot", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-review-input", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-record-review", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-approve-merge", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-request-changes", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-reject-merge", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-integrate", "type": "gate", "config": { "delayMs": 1000 } },
-    { "id": "busy-cleanup", "type": "gate", "config": { "delayMs": 1000 } }
+    {
+      "id": "busy-seed-batch",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-producer-dispatch",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-record-proposal",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-route",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-approve-requirement",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-reject-requirement",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-revise-proposal",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-prepare",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-begin-engineering",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-snapshot",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-review-input",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-record-review",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-approve-merge",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-request-changes",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-reject-merge",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-cleanup",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "publish-pr",
+      "type": "command",
+      "title": "Push branch and open draft PR",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs publish-pr",
+        "json": true
+      }
+    },
+    {
+      "id": "brief",
+      "type": "command",
+      "title": "Build Human/PR merge brief",
+      "config": {
+        "command": "node docs/examples/development/driver.mjs brief",
+        "json": true
+      }
+    },
+    {
+      "id": "ready-pr",
+      "type": "command",
+      "title": "Mark approved PR ready",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs ready-pr",
+        "json": true
+      }
+    },
+    {
+      "id": "check-pr",
+      "type": "command",
+      "title": "Check own PR merge state",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs check-pr",
+        "json": true
+      }
+    },
+    {
+      "id": "pr-gate",
+      "type": "gate",
+      "title": "Wait for external PR merge",
+      "concurrency": 1,
+      "config": {
+        "delayMs": 30000
+      }
+    },
+    {
+      "id": "busy-publish-pr",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-ready-pr",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-check-pr",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "integration-route",
+      "type": "command",
+      "title": "Choose PR or local integration",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs integration-route",
+        "json": true
+      }
+    },
+    {
+      "id": "integrate",
+      "type": "command",
+      "title": "Local integration fallback",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs integrate",
+        "json": true
+      }
+    },
+    {
+      "id": "busy-integrate",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-brief",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "busy-integration-route",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    }
   ],
   "edges": [
-    { "from": "dispatch", "to": "work-fanout", "on": "ready" },
-    { "from": "mine-gate", "to": "queue-check", "on": "complete" },
-    { "from": "queue-check", "to": "seed-batch", "on": "mine" },
-    { "from": "queue-check", "to": "producer-dispatch", "on": "skip" },
-    { "from": "seed-batch", "to": "seed-fanout", "on": "ready" },
-    { "from": "seed-batch", "to": "producer-dispatch", "on": "idle" },
-    { "from": "seed-fanout", "to": "producer-dispatch", "on": "complete" },
-    { "from": "producer-dispatch", "to": "producer-work", "on": "ready" },
-    { "from": "producer-dispatch", "to": "mine-gate", "on": "idle" },
-    { "from": "producer-work", "to": "mine-gate", "on": "complete" },
-    { "from": "miner", "to": "record-proposal", "on": "proposal" },
-    { "from": "miner", "to": "record-proposal", "on": "idle" },
-    { "from": "route", "to": "prepare", "on": "ready" },
-    { "from": "route", "to": "requirement-human", "on": "needs_approval" },
-    { "from": "requirement-human", "to": "approve-requirement", "on": "approve" },
-    { "from": "requirement-human", "to": "reject-requirement", "on": "reject" },
-    { "from": "approve-requirement", "to": "prepare", "on": "ready" },
-    { "from": "reject-requirement", "to": "analyst-revise", "on": "revise" },
-    { "from": "analyst-revise", "to": "revise-proposal", "on": "complete" },
-    { "from": "revise-proposal", "to": "route", "on": "complete" },
-    { "from": "prepare", "to": "begin-engineering", "on": "complete" },
-    { "from": "begin-engineering", "to": "engineer", "on": "complete" },
-    { "from": "engineer", "to": "snapshot", "on": "complete" },
-    { "from": "snapshot", "to": "review-input", "on": "complete" },
-    { "from": "review-input", "to": "reviewer", "on": "complete" },
-    { "from": "reviewer", "to": "record-review", "on": "pass" },
-    { "from": "reviewer", "to": "record-review", "on": "revise" },
-    { "from": "record-review", "to": "begin-engineering", "on": "revise" },
-    { "from": "record-review", "to": "merge-human", "on": "pass" },
-    { "from": "merge-human", "to": "approve-merge", "on": "approve" },
-    { "from": "merge-human", "to": "request-changes", "on": "revise" },
-    { "from": "merge-human", "to": "reject-merge", "on": "reject" },
-    { "from": "approve-merge", "to": "integrate", "on": "approve" },
-    { "from": "request-changes", "to": "begin-engineering", "on": "revise" },
-    { "from": "integrate", "to": "cleanup", "on": "merged" },
-    { "from": "integrate", "to": "begin-engineering", "on": "revise" },
-    { "from": "integrate", "to": "external-gate", "on": "external-pending" },
-    { "from": "external-gate", "to": "integrate", "on": "complete" },
-    { "from": "dispatch", "to": "busy-dispatch", "on": "busy" },
-    { "from": "busy-dispatch", "to": "dispatch", "on": "complete" },
-    { "from": "queue-check", "to": "busy-queue-check", "on": "busy" },
-    { "from": "busy-queue-check", "to": "queue-check", "on": "complete" },
-    { "from": "seed-batch", "to": "busy-seed-batch", "on": "busy" },
-    { "from": "busy-seed-batch", "to": "seed-batch", "on": "complete" },
-    { "from": "producer-dispatch", "to": "busy-producer-dispatch", "on": "busy" },
-    { "from": "busy-producer-dispatch", "to": "producer-dispatch", "on": "complete" },
-    { "from": "record-proposal", "to": "busy-record-proposal", "on": "busy" },
-    { "from": "busy-record-proposal", "to": "record-proposal", "on": "complete" },
-    { "from": "route", "to": "busy-route", "on": "busy" },
-    { "from": "busy-route", "to": "route", "on": "complete" },
-    { "from": "approve-requirement", "to": "busy-approve-requirement", "on": "busy" },
-    { "from": "busy-approve-requirement", "to": "approve-requirement", "on": "complete" },
-    { "from": "reject-requirement", "to": "busy-reject-requirement", "on": "busy" },
-    { "from": "busy-reject-requirement", "to": "reject-requirement", "on": "complete" },
-    { "from": "revise-proposal", "to": "busy-revise-proposal", "on": "busy" },
-    { "from": "busy-revise-proposal", "to": "revise-proposal", "on": "complete" },
-    { "from": "prepare", "to": "busy-prepare", "on": "busy" },
-    { "from": "busy-prepare", "to": "prepare", "on": "complete" },
-    { "from": "begin-engineering", "to": "busy-begin-engineering", "on": "busy" },
-    { "from": "busy-begin-engineering", "to": "begin-engineering", "on": "complete" },
-    { "from": "snapshot", "to": "busy-snapshot", "on": "busy" },
-    { "from": "busy-snapshot", "to": "snapshot", "on": "complete" },
-    { "from": "review-input", "to": "busy-review-input", "on": "busy" },
-    { "from": "busy-review-input", "to": "review-input", "on": "complete" },
-    { "from": "record-review", "to": "busy-record-review", "on": "busy" },
-    { "from": "busy-record-review", "to": "record-review", "on": "complete" },
-    { "from": "approve-merge", "to": "busy-approve-merge", "on": "busy" },
-    { "from": "busy-approve-merge", "to": "approve-merge", "on": "complete" },
-    { "from": "request-changes", "to": "busy-request-changes", "on": "busy" },
-    { "from": "busy-request-changes", "to": "request-changes", "on": "complete" },
-    { "from": "reject-merge", "to": "busy-reject-merge", "on": "busy" },
-    { "from": "busy-reject-merge", "to": "reject-merge", "on": "complete" },
-    { "from": "integrate", "to": "busy-integrate", "on": "busy" },
-    { "from": "busy-integrate", "to": "integrate", "on": "complete" },
-    { "from": "cleanup", "to": "busy-cleanup", "on": "busy" },
-    { "from": "busy-cleanup", "to": "cleanup", "on": "complete" }
+    {
+      "from": "dispatch",
+      "to": "work-fanout",
+      "on": "ready"
+    },
+    {
+      "from": "mine-gate",
+      "to": "queue-check",
+      "on": "complete"
+    },
+    {
+      "from": "queue-check",
+      "to": "seed-batch",
+      "on": "mine"
+    },
+    {
+      "from": "queue-check",
+      "to": "producer-dispatch",
+      "on": "skip"
+    },
+    {
+      "from": "seed-batch",
+      "to": "seed-fanout",
+      "on": "ready"
+    },
+    {
+      "from": "seed-batch",
+      "to": "producer-dispatch",
+      "on": "idle"
+    },
+    {
+      "from": "seed-fanout",
+      "to": "producer-dispatch",
+      "on": "complete"
+    },
+    {
+      "from": "producer-dispatch",
+      "to": "producer-work",
+      "on": "ready"
+    },
+    {
+      "from": "producer-dispatch",
+      "to": "mine-gate",
+      "on": "idle"
+    },
+    {
+      "from": "producer-work",
+      "to": "mine-gate",
+      "on": "complete"
+    },
+    {
+      "from": "miner",
+      "to": "record-proposal",
+      "on": "proposal"
+    },
+    {
+      "from": "miner",
+      "to": "record-proposal",
+      "on": "idle"
+    },
+    {
+      "from": "route",
+      "to": "prepare",
+      "on": "ready"
+    },
+    {
+      "from": "route",
+      "to": "requirement-human",
+      "on": "needs_approval"
+    },
+    {
+      "from": "requirement-human",
+      "to": "approve-requirement",
+      "on": "approve"
+    },
+    {
+      "from": "requirement-human",
+      "to": "reject-requirement",
+      "on": "reject"
+    },
+    {
+      "from": "approve-requirement",
+      "to": "prepare",
+      "on": "ready"
+    },
+    {
+      "from": "reject-requirement",
+      "to": "analyst-revise",
+      "on": "revise"
+    },
+    {
+      "from": "analyst-revise",
+      "to": "revise-proposal",
+      "on": "complete"
+    },
+    {
+      "from": "revise-proposal",
+      "to": "route",
+      "on": "complete"
+    },
+    {
+      "from": "prepare",
+      "to": "begin-engineering",
+      "on": "complete"
+    },
+    {
+      "from": "begin-engineering",
+      "to": "engineer",
+      "on": "complete"
+    },
+    {
+      "from": "engineer",
+      "to": "snapshot",
+      "on": "complete"
+    },
+    {
+      "from": "review-input",
+      "to": "reviewer",
+      "on": "complete"
+    },
+    {
+      "from": "reviewer",
+      "to": "record-review",
+      "on": "pass"
+    },
+    {
+      "from": "reviewer",
+      "to": "record-review",
+      "on": "revise"
+    },
+    {
+      "from": "record-review",
+      "to": "begin-engineering",
+      "on": "revise"
+    },
+    {
+      "from": "merge-human",
+      "to": "approve-merge",
+      "on": "approve"
+    },
+    {
+      "from": "merge-human",
+      "to": "request-changes",
+      "on": "revise"
+    },
+    {
+      "from": "merge-human",
+      "to": "reject-merge",
+      "on": "reject"
+    },
+    {
+      "from": "request-changes",
+      "to": "begin-engineering",
+      "on": "revise"
+    },
+    {
+      "from": "dispatch",
+      "to": "busy-dispatch",
+      "on": "busy"
+    },
+    {
+      "from": "busy-dispatch",
+      "to": "dispatch",
+      "on": "complete"
+    },
+    {
+      "from": "queue-check",
+      "to": "busy-queue-check",
+      "on": "busy"
+    },
+    {
+      "from": "busy-queue-check",
+      "to": "queue-check",
+      "on": "complete"
+    },
+    {
+      "from": "seed-batch",
+      "to": "busy-seed-batch",
+      "on": "busy"
+    },
+    {
+      "from": "busy-seed-batch",
+      "to": "seed-batch",
+      "on": "complete"
+    },
+    {
+      "from": "producer-dispatch",
+      "to": "busy-producer-dispatch",
+      "on": "busy"
+    },
+    {
+      "from": "busy-producer-dispatch",
+      "to": "producer-dispatch",
+      "on": "complete"
+    },
+    {
+      "from": "record-proposal",
+      "to": "busy-record-proposal",
+      "on": "busy"
+    },
+    {
+      "from": "busy-record-proposal",
+      "to": "record-proposal",
+      "on": "complete"
+    },
+    {
+      "from": "route",
+      "to": "busy-route",
+      "on": "busy"
+    },
+    {
+      "from": "busy-route",
+      "to": "route",
+      "on": "complete"
+    },
+    {
+      "from": "approve-requirement",
+      "to": "busy-approve-requirement",
+      "on": "busy"
+    },
+    {
+      "from": "busy-approve-requirement",
+      "to": "approve-requirement",
+      "on": "complete"
+    },
+    {
+      "from": "reject-requirement",
+      "to": "busy-reject-requirement",
+      "on": "busy"
+    },
+    {
+      "from": "busy-reject-requirement",
+      "to": "reject-requirement",
+      "on": "complete"
+    },
+    {
+      "from": "revise-proposal",
+      "to": "busy-revise-proposal",
+      "on": "busy"
+    },
+    {
+      "from": "busy-revise-proposal",
+      "to": "revise-proposal",
+      "on": "complete"
+    },
+    {
+      "from": "prepare",
+      "to": "busy-prepare",
+      "on": "busy"
+    },
+    {
+      "from": "busy-prepare",
+      "to": "prepare",
+      "on": "complete"
+    },
+    {
+      "from": "begin-engineering",
+      "to": "busy-begin-engineering",
+      "on": "busy"
+    },
+    {
+      "from": "busy-begin-engineering",
+      "to": "begin-engineering",
+      "on": "complete"
+    },
+    {
+      "from": "snapshot",
+      "to": "busy-snapshot",
+      "on": "busy"
+    },
+    {
+      "from": "busy-snapshot",
+      "to": "snapshot",
+      "on": "complete"
+    },
+    {
+      "from": "review-input",
+      "to": "busy-review-input",
+      "on": "busy"
+    },
+    {
+      "from": "busy-review-input",
+      "to": "review-input",
+      "on": "complete"
+    },
+    {
+      "from": "record-review",
+      "to": "busy-record-review",
+      "on": "busy"
+    },
+    {
+      "from": "busy-record-review",
+      "to": "record-review",
+      "on": "complete"
+    },
+    {
+      "from": "approve-merge",
+      "to": "busy-approve-merge",
+      "on": "busy"
+    },
+    {
+      "from": "busy-approve-merge",
+      "to": "approve-merge",
+      "on": "complete"
+    },
+    {
+      "from": "request-changes",
+      "to": "busy-request-changes",
+      "on": "busy"
+    },
+    {
+      "from": "busy-request-changes",
+      "to": "request-changes",
+      "on": "complete"
+    },
+    {
+      "from": "reject-merge",
+      "to": "busy-reject-merge",
+      "on": "busy"
+    },
+    {
+      "from": "busy-reject-merge",
+      "to": "reject-merge",
+      "on": "complete"
+    },
+    {
+      "from": "cleanup",
+      "to": "busy-cleanup",
+      "on": "busy"
+    },
+    {
+      "from": "busy-cleanup",
+      "to": "cleanup",
+      "on": "complete"
+    },
+    {
+      "from": "snapshot",
+      "to": "publish-pr",
+      "on": "complete"
+    },
+    {
+      "from": "publish-pr",
+      "to": "review-input",
+      "on": "complete"
+    },
+    {
+      "from": "record-review",
+      "to": "brief",
+      "on": "pass"
+    },
+    {
+      "from": "brief",
+      "to": "merge-human",
+      "on": "complete"
+    },
+    {
+      "from": "ready-pr",
+      "to": "check-pr",
+      "on": "complete"
+    },
+    {
+      "from": "check-pr",
+      "to": "cleanup",
+      "on": "merged"
+    },
+    {
+      "from": "check-pr",
+      "to": "pr-gate",
+      "on": "waiting"
+    },
+    {
+      "from": "check-pr",
+      "to": "begin-engineering",
+      "on": "closed"
+    },
+    {
+      "from": "pr-gate",
+      "to": "check-pr",
+      "on": "complete"
+    },
+    {
+      "from": "publish-pr",
+      "to": "busy-publish-pr",
+      "on": "busy"
+    },
+    {
+      "from": "busy-publish-pr",
+      "to": "publish-pr",
+      "on": "complete"
+    },
+    {
+      "from": "ready-pr",
+      "to": "busy-ready-pr",
+      "on": "busy"
+    },
+    {
+      "from": "busy-ready-pr",
+      "to": "ready-pr",
+      "on": "complete"
+    },
+    {
+      "from": "check-pr",
+      "to": "busy-check-pr",
+      "on": "busy"
+    },
+    {
+      "from": "busy-check-pr",
+      "to": "check-pr",
+      "on": "complete"
+    },
+    {
+      "from": "ready-pr",
+      "to": "cleanup",
+      "on": "merged"
+    },
+    {
+      "from": "approve-merge",
+      "to": "integration-route",
+      "on": "approve"
+    },
+    {
+      "from": "integration-route",
+      "to": "integrate",
+      "on": "local"
+    },
+    {
+      "from": "integration-route",
+      "to": "ready-pr",
+      "on": "pr"
+    },
+    {
+      "from": "publish-pr",
+      "to": "review-input",
+      "on": "skipped"
+    },
+    {
+      "from": "integrate",
+      "to": "cleanup",
+      "on": "merged"
+    },
+    {
+      "from": "integrate",
+      "to": "begin-engineering",
+      "on": "revise"
+    },
+    {
+      "from": "integrate",
+      "to": "busy-integrate",
+      "on": "busy"
+    },
+    {
+      "from": "busy-integrate",
+      "to": "integrate",
+      "on": "complete"
+    },
+    {
+      "from": "brief",
+      "to": "busy-brief",
+      "on": "busy"
+    },
+    {
+      "from": "busy-brief",
+      "to": "brief",
+      "on": "complete"
+    },
+    {
+      "from": "integration-route",
+      "to": "busy-integration-route",
+      "on": "busy"
+    },
+    {
+      "from": "busy-integration-route",
+      "to": "integration-route",
+      "on": "complete"
+    }
   ]
 }

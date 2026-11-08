@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DevelopmentStore, BusinessBusy, absolute, seedId } from './store.mjs';
 import * as worktrees from './worktrees.mjs';
+import * as pullRequests from './pr.mjs';
 
 export async function stage(name, input) {
   try { return await executeStage(name, input); }
@@ -65,6 +66,20 @@ async function executeStage(name, input) {
     const action = name === 'snapshot' ? worktrees.snapshot : worktrees.reconcileSnapshot;
     const saved = await action(store, id, claimId, input);
     return result('complete', store.envelope(saved.item, { artifactRef: saved.artifactRef, artifactRevision: saved.artifactRevision, commit: saved.commit }));
+  }
+  if (name === 'integration-route') {
+    const item = await store.get(id);
+    return result(store.config.integrationMode === 'pull-request' ? 'pr' : 'local', store.envelope(item));
+  }
+  if (name === 'publish-pr' || name === 'ready-pr' || name === 'check-pr') {
+    const action = name === 'publish-pr' ? pullRequests.publish : name === 'ready-pr' ? pullRequests.ready : pullRequests.check;
+    const changed = await action(store, id, claimId);
+    return result(changed.outcome, store.envelope(changed.item, { ...(changed.item.implementation ?? {}), pr: changed.item.pr ?? null, integration: changed.item.integration ?? null }));
+  }
+  if (name === 'brief') {
+    const item = await worktrees.mergeBrief(store, id, claimId);
+    await pullRequests.updateBody(store, item);
+    return result('complete', store.envelope(item, { brief: item.brief ?? null, pr: item.pr ?? null }));
   }
   if (name === 'review-input') {
     const item = await store.mutate(id, claimId, item => {

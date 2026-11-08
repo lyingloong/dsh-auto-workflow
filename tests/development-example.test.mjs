@@ -7,7 +7,8 @@ import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, realpath, lstat } from 'node:fs/promises';
 import { DevelopmentStore, atomicJSON } from '../docs/examples/development/store.mjs';
-import { git, prepare, snapshot, recordReview, integrate, cleanup } from '../docs/examples/development/worktrees.mjs';
+import { git, prepare, snapshot, recordReview, integrate, cleanup, mergeBrief } from '../docs/examples/development/worktrees.mjs';
+import { publish, ready, check, updateBody } from '../docs/examples/development/pr.mjs';
 import { stage } from '../docs/examples/development/driver.mjs';
 import { normalizeDefinition } from '../src/definition.mjs';
 import { newRunState, enqueue, run, decide, waitingHumanTokens } from '../src/runtime.mjs';
@@ -23,8 +24,26 @@ async function fixture(t, options = {}) {
   for (const [key, value] of Object.entries({ 'user.name': 'Example Test', 'user.email': 'example-test@invalid.local', 'core.autocrlf': 'false', 'core.hooksPath': path.join(root, 'no-hooks'), 'commit.gpgsign': 'false' })) await git(repo, 'config', key, value);
   await writeFile(path.join(repo, 'shared.txt'), 'base\n');
   await git(repo, 'add', '--all'); await git(repo, 'commit', '-m', 'temporary test base');
-  const store = await DevelopmentStore.create({ dataRoot: path.join(root, 'data'), repoRoot: repo, ...options });
+  const store = await DevelopmentStore.create({ dataRoot: path.join(root, 'data'), repoRoot: repo, integrationMode: 'local', ...options });
   return { root, repo, store };
+}
+async function withPullRequestFixture(t, { root, repo }) {
+  const remote = path.join(root, 'remote.git');
+  await git(root, 'init', '--bare', remote);
+  await git(repo, 'remote', 'add', 'origin', remote);
+  await git(repo, 'push', '-u', 'origin', 'main');
+  const fakeGh = fileURLToPath(new URL('./fixtures/fake-gh.mjs', import.meta.url));
+  const state = path.join(root, 'fake-pr-state.json');
+  const previous = { DSH_GH_BIN: process.env.DSH_GH_BIN, DSH_GH_SCRIPT: process.env.DSH_GH_SCRIPT, DSH_FAKE_PR_STATE: process.env.DSH_FAKE_PR_STATE };
+  process.env.DSH_GH_BIN = process.execPath;
+  process.env.DSH_GH_SCRIPT = fakeGh;
+  process.env.DSH_FAKE_PR_STATE = state;
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  return { remote, state };
 }
 const user = (id, extra = {}) => ({ id, source: 'user', title: id, description: `Implement ${id}`, risk: 'high', ...extra });
 const mined = (id, value = 'mid', extra = {}) => ({ id, source: 'mined', seedId: `seed-${id.slice(4)}`, title: id, description: `Mined ${id}`, risk: value, ...extra });
@@ -66,15 +85,20 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.equal(engineer.concurrency, 3); assert.equal(reviewer.concurrency, 3);
   assert.equal(engineer.config.cwd, '$input.cwd'); assert.equal(reviewer.config.cwd, '$input.cwd');
   assert.equal(graph.nodes.filter(node => node.role === 'reviewer').length, 1, 'a pool, not three reviews per item');
-  assert.equal(graph.nodes.find(node => node.id === 'integrate').concurrency, 1);
+  assert.equal(graph.nodes.find(node => node.id === 'check-pr').concurrency, 1);
+  assert.equal(graph.nodes.find(node => node.id === 'publish-pr').concurrency, 1);
+  assert.ok(graph.nodes.find(node => node.id === 'brief'));
   assert.ok(!('timeoutMs' in engineer.config)); assert.ok(!('timeoutMs' in reviewer.config));
   assert.ok(graph.nodes.find(node => node.id === 'mine-gate').config.delayMs >= 1000);
   assert.ok(graph.nodes.find(node => node.id === 'queue-check'));
   assert.ok(!graph.nodes.some(node => node.id === 'conflict-human'));
   assert.ok(graph.edges.some(edge => edge.from === 'queue-check' && edge.to === 'seed-batch' && edge.on === 'mine'));
-  assert.ok(graph.edges.some(edge => edge.from === 'integrate' && edge.to === 'begin-engineering' && edge.on === 'revise'));
-  assert.ok(graph.nodes.find(node => node.id === 'external-gate').type === 'gate');
-  assert.ok(graph.edges.some(edge => edge.from === 'integrate' && edge.to === 'external-gate' && edge.on === 'external-pending'));
+  assert.ok(graph.edges.some(edge => edge.from === 'snapshot' && edge.to === 'publish-pr' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'record-review' && edge.to === 'brief' && edge.on === 'pass'));
+  assert.ok(graph.edges.some(edge => edge.from === 'brief' && edge.to === 'merge-human' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'begin-engineering' && edge.on === 'closed'));
+  assert.ok(graph.nodes.find(node => node.id === 'pr-gate').type === 'gate');
+  assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'pr-gate' && edge.on === 'waiting'));
   assert.ok(graph.nodes.find(node => node.id === 'seed-fanout').config.detached);
   assert.ok(graph.nodes.find(node => node.id === 'producer-work').config.detached);
   assert.ok(graph.edges.some(edge => edge.from === 'producer-work' && edge.to === 'mine-gate'));
@@ -179,6 +203,36 @@ test('CLI protocol is JSON-only and filesystem claim lock works across processes
   assert.equal(JSON.parse(stdout).outcome, 'fail');
 });
 
+test('one requirement branch + one worktree + one PR survives review, external merge and cleanup', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request' });
+  const { state: prState } = await withPullRequestFixture(t, base);
+  const { store, repo } = base;
+  const item = await prepared(store, 'req-branch');
+  assert.equal((await store.get(item.id)).branch, 'auto/req-branch');
+  assert.equal(await git(item.cwd, 'rev-parse', '--abbrev-ref', 'HEAD'), 'auto/req-branch');
+  const artifact = await implement(store, item);
+  const baseRevision = (await store.get(item.id)).baseRevision;
+  assert.equal(await git(item.cwd, 'rev-list', '--count', `${baseRevision}..HEAD`), '1', 'snapshot squashes the PR to one commit');
+  const published = await publish(store, item.id, item.claimId);
+  assert.equal(published.outcome, 'complete');
+  assert.equal((await store.get(item.id)).pr.number, 1);
+  await pass(store, item, artifact);
+  const brief = await mergeBrief(store, item.id, item.claimId);
+  assert.match(brief.brief.markdown, /## Requirement/);
+  assert.match(brief.brief.markdown, /req-branch/);
+  await updateBody(store, brief);
+  const prFile = JSON.parse(await readFile(prState, 'utf8'));
+  assert.match(prFile.prs[0].body, /Pinned commit reviewed/);
+  await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'approve', actor: 'test-human' });
+  assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
+  const merged = await check(store, item.id, item.claimId);
+  assert.equal(merged.outcome, 'merged');
+  assert.equal((await store.get(item.id)).integration.mechanism, 'pull-request');
+  assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
+  assert.equal(await git(repo, 'branch', '--list', 'auto/req-branch'), '');
+  await assert.rejects(lstat(item.cwd), { code: 'ENOENT' });
+});
+
 test('real worktree survives review feedback/rejection; implementation and reviews pin immutable revisions', async t => {
   const { store } = await fixture(t);
   const item = await prepared(store);
@@ -229,14 +283,15 @@ test('clean local merge is human-approved, verified, serialized and auto-removed
     await git(repo, 'merge-base', '--is-ancestor', artifact.commit, 'HEAD');
     assert.equal((await store.get(item.id)).integration.state, 'verified');
     assert.ok((await lstat(item.cwd)).isDirectory());
-    assert.equal(await git(item.cwd, 'rev-parse', '--abbrev-ref', 'HEAD'), 'HEAD', 'requirement worktree stays detached');
+    assert.equal(await git(item.cwd, 'rev-parse', '--abbrev-ref', 'HEAD'), 'auto/req-' + item.id.slice(4), 'requirement worktree stays on its requirement branch');
     assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
     await assert.rejects(lstat(item.cwd), { code: 'ENOENT' });
     assert.equal((await store.get(item.id)).worktreePath, null);
     assert.equal((await store.get(item.id)).cleanedWorktreePath, item.cwd);
+    assert.equal((await store.get(item.id)).cleanedBranch, 'auto/req-' + item.id.slice(4));
   }
-  assert.equal(await git(repo, 'branch', '--list', 'development/req-one'), '', 'cleanup never had a branch to delete');
-  assert.equal(await git(repo, 'branch', '--list', 'development/req-two'), '', 'cleanup never had a branch to delete');
+  assert.equal(await git(repo, 'branch', '--list', 'auto/req-one'), '', 'cleanup deletes the requirement branch');
+  assert.equal(await git(repo, 'branch', '--list', 'auto/req-two'), '', 'cleanup deletes the requirement branch');
 });
 
 test('real Git conflict auto-aborts target and returns the same id/worktree to engineering', async t => {
@@ -305,7 +360,9 @@ test('producer cycles independently of disabled workers, claims each seed once a
 });
 
 test('whole graph reaches both pool caps of three; one human wait never stalls other items or new arrivals', { timeout: 60_000 }, async t => {
-  const { store, repo } = await fixture(t);
+  const base = await fixture(t, { integrationMode: 'pull-request' });
+  await withPullRequestFixture(t, base);
+  const { store, repo } = base;
   for (let index = 0; index < 6; index++) await store.upsertRequirement(user(`req-graph-${index}`));
   const graph = normalizeDefinition(JSON.parse(await readFile(graphFile, 'utf8')));
   const artifacts = new Map(); let next = 0;
@@ -362,22 +419,6 @@ test('whole graph reaches both pool caps of three; one human wait never stalls o
       await assert.rejects(lstat(item.cleanedWorktreePath), { code: 'ENOENT' });
     } else assert.ok((await lstat(item.worktreePath)).isDirectory());
   }
-});
-
-test('external-pr mode waits for an external merge and never merges locally', async t => {
-  const { store, repo } = await fixture(t, { integrationMode: 'external-pr' });
-  const item = await prepared(store); const artifact = await implement(store, item); await approve(store, item, artifact);
-  const targetHead = await git(repo, 'rev-parse', 'HEAD');
-  const pending = await integrate(store, item.id, item.claimId);
-  assert.equal(pending.outcome, 'external-pending');
-  assert.equal(await git(repo, 'rev-parse', 'HEAD'), targetHead, 'workflow must not merge locally');
-  assert.equal((await store.get(item.id)).status, 'approved');
-  assert.equal((await store.get(item.id)).integration.state, 'external-pending');
-  await git(repo, 'merge', '--no-ff', artifact.commit, '-m', 'external PR merge');
-  const merged = await integrate(store, item.id, item.claimId);
-  assert.equal(merged.outcome, 'merged');
-  assert.equal(merged.item.integration.state, 'external-verified');
-  assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
 });
 
 test('explicit cleanup policy may remove only an already verified merged worktree', async t => {

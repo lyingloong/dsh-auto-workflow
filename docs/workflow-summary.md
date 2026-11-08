@@ -1,6 +1,6 @@
 # 业务流程与保证：GitHub 项目本地持续开发
 
-这是 Auto Workflow（`dsh-auto-workflow`）的**唯一主业务示例**：把 GitHub 仓库克隆到本地，在保留的 worktree 中持续处理真实需求，经过审查与人工批准后本地集成。不是托管机器人，不自动监听聊天、抓取 GitHub Issues、push、开 PR 或远端 merge。
+这是 Auto Workflow（`dsh-auto-workflow`）的**唯一主业务示例**：把 GitHub 仓库克隆到本地，每个需求在独立分支/attached worktree 中开发，由工作流发布自己的 draft PR；经过审查、Human brief 和外部 Codex/人 merge 后，只验证并清理。不是托管机器人，不自动监听聊天或抓取 GitHub Issues，也不自行 merge 远端 PR。
 
 [完整操作指南](<examples/development/README.md>) 负责安装后的准备与操作；本页集中说明业务契约。实现由 [节点图](<examples/development/workflow.json>)、[业务存储](<examples/development/store.mjs>)、[本地 Git 模块](<examples/development/worktrees.mjs>) 和 [JSON driver](<examples/development/driver.mjs>) 组成。插件只调度通用 packet 和引用，不解释业务 `dataRef`。
 
@@ -12,19 +12,22 @@
   → 用户优先、priority、FIFO、ID 的确定性准入
   → 用户 / 挖掘 low：直接进入开发
     挖掘 mid/high：Human 需求审批；拒绝反馈 → 同 ID 修订 → 再评估
-  → 每需求一个保留的 detached worktree
+  → 每需求一个 auto/req-* 分支 + attached worktree
   → begin-engineering → engineer 池（最多 3）
-  → 冻结需求 revision、engineeringEpoch、commit、tree
+  → snapshot：整个分支压成单 commit，冻结 revision/epoch/commit/tree
+  → push 分支并创建 draft PR
   → reviewer 池（最多 3；每需求只分配一位）
-    revise → 同 ID / 同 worktree 的下一轮开发
+    revise → 同 ID / 分支 / worktree / PR 的下一轮开发
+  → brief 生成 Human/PR 共用摘要
   → Human merge 待办池
     revise → 同 ID 返修；reject → 保留，不合并
-    approve 精确产物 → 串行本地集成（最多 1）
-  → 干净目标上验证已批准 commit 的祖先关系
-  → 默认 after-verified-merge：清理已合并需求的 worktree
+    approve 精确产物 → 标记自己的 PR ready
+  → Codex/人在 GitHub merge PR
+  → check-pr 轮询自己的 PR，验证批准 commit 在 base
+  → 默认 after-verified-merge：清理 worktree 和本地需求分支
 ```
 
-根并发为 **6**，所有节点共享，命令与 miner 也计入其中。3+3 是工作池容量，不是每项需求三轮审查，也不保证始终有六个模型同时工作。返修回到相同 engineer 流程、ID 和 worktree，不以新建需求或分支替代返修。
+根并发为 **6**，所有节点共享，命令与 miner 也计入其中。3+3 是工作池容量，不是每项需求三轮审查，也不保证始终有六个模型同时工作。返修回到相同 engineer 流程、ID、分支、worktree 和 PR，不以新建需求或分支替代返修。
 
 Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的需求。节点池可以 `running`、`idle`、`disabled`；结束的是单项执行/packet，不是整个服务。
 
@@ -32,7 +35,7 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 
 - **用户需求**只由获得授权的 intake 调用写入。优先级强制为 `0`，即使风险为 high 也跳过“需求是否开展”的审批；仍必须通过实现 review 与 Human merge 门禁。
 - **挖掘需求**来自事先提供的真实证据 seed，优先级为 `1..9`。low 跳过需求审批，mid/high 必须人工决定。没有 seed 就不调用挖掘模型；无可行动建议的 seed 记为 idle，不凭空制造需求。初始化会写入一组可选的 baseline discovery seeds（docs、refactor、page、chore、tests、dependency 等），它们只是发现方向，不是证据；miner 找不到具体问题仍应返回 idle。
-- 默认 `dispatch` 只准入有限批次。要持续处理，在同一 run 中显式向 `mine-gate` enqueue **一个** producer。它每轮经 60 秒 gate、backlog 水位检查、seed claim、detached miner 分支、队列 dispatch、detached 需求分支后返回 gate。仅当待实现需求（含 engineering）不超过工程师并发数 3 时才进入挖掘；backlog 更深时只 dispatch 已有队列。
+- 默认 `dispatch` 只准入有限批次。要持续处理，在同一 run 中显式向 `mine-gate` enqueue **一个** producer。它每轮经 60 秒 gate、backlog 水位检查、seed claim、detached miner packet、队列 dispatch、detached 需求 packet 后返回 gate。仅当待实现需求（含 engineering）不超过工程师并发数 3 时才进入挖掘；backlog 更深时只 dispatch 已有队列。
 - 慢模型和 Human 等待不会牵住 detached producer。后续 seed 与用户需求可以继续写入；需要即时处理时可 enqueue 有限 `dispatch`，不要重复启动 producer。
 - 优先级作用于业务队列的 claim；不抢占已经领取/执行的工作，也不承诺重排引擎中已经排队的 token。
 
@@ -42,7 +45,7 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 | --- | --- |
 | 稳定 ID | 一项需求一个 ID 和绝对 `dataRef`；需求 ID、seed ID、packet ID、引擎 artifact ID 各自独立。 |
 | 同 ID 更新 | 仅 queued 项可 intake upsert，要求当前 `expectedRevision`，保留原 FIFO 顺序；active 项走反馈路径，不可覆盖。 |
-| 单一 worktree | 每项保存 `worktreePath` 和 `baseRevision`，使用 detached HEAD，**无每需求分支**；以 commit ID 集成。返修、拒绝、停止、冲突不删除它。 |
+| 单一分支/worktree | 每项保存 `auto/req-*`、`worktreePath` 和 `baseRevision`；worktree attached 到该分支。snapshot 压成单 commit，PR head 精确绑定它。返修、拒绝、停止、冲突不删除它。 |
 | 需求审批绑定 | Human 需求响应绑定当时冻结的 `expectedRevision`，不能批准后来已修订的规格。 |
 | 工程轮次绑定 | `begin-engineering` 消耗上轮 admission 并增加 `engineeringEpoch`；snapshot 校验冻结的 revision + epoch，拒绝旧轮响应。长期 `claimId` 不是单轮能力凭证。 |
 | 不可变实现与 review | 每轮实现、审查都是新记录；review/merge approval 绑定精确需求 revision、artifact 和 commit。脏 worktree 或改变的 HEAD 会阻止继续。 |
@@ -54,17 +57,19 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 
 示例业务存储为 `version: 2`，与包 SemVer 无关。旧 store 不迁移、不删除；使用新的 canonical root 并保留旧数据供检查。
 
-## 人工批准、本地集成和保留
+## 人工批准、PR 发布和保留
 
-通用 Human 节点只记录小型 outcome/output；后续示例命令才写入业务决定。需求拒绝、实现返修/拒绝、冲突恢复都需要有意义的反馈。审批精确产物不代表授权远端发布。
+通用 Human 节点只记录小型 outcome/output；后续示例命令才写入业务决定。需求拒绝、实现返修/拒绝都需要有意义的反馈。工作流发布自己的需求 PR，但外部 merge 是独立的 GitHub 决定；Human 审批精确产物不等于允许工作流自行 merge。
 
-集成同时受节点 `concurrency: 1` 与 store 级 integration lock 保护。目标必须在配置的 `baseBranch`、干净且没有正在进行的 merge；批准的 worktree 必须仍是原来的干净 HEAD。推荐把这个本地目标设为**共享集成批次分支**，而非为每需求建分支；如以后需要 GitHub PR，可由用户单独授权后手动提交整个批次。
+Publish/ready/check 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；ready 前必须有精确 Human 批准；check 只轮询工作流自己记录的 `prNumber`。工作流 push `auto/req-*` 分支、创建/编辑自己的 draft PR，但不使用自己的 token merge。
 
-合并前检查目标中的 ignored 文件与批准 tree 的路径碰撞（含文件/目录前缀与适用时的大小写折叠），碰撞时保留目标数据、不执行 merge。成功后验证干净目标及已批准 commit 的祖先关系。真实 merge 冲突由 `integrate` 自动保存冲突文件/错误、执行 `git merge --abort`、清除旧 merge approval，并把同一需求/同一 worktree 送回 `begin-engineering`；不重试合并、不把冲突当成模型失败。
+`brief` 在 review pass 后生成结构化摘要（需求、改动、验证、审查、风险），同一份内容进入 PR body 和看板 Human 详情；原始 artifact 折叠。review/rework 会 force-push 同一 PR 的新单 commit，并重新绑定 artifact/review/Human approval。
 
-`integrationMode:"external-pr"` 时不执行本地 merge：`integrate` 只验证本地已更新的 base 分支已包含批准 commit；尚未包含时返回 `external-pending`，经 30 秒 gate 重试，包含后记录 `external-verified` 并清理。外部 PR 的 push、创建和 GitHub merge 由操作者/CI 完成；示例不轮询远端，也不自动更新本地分支。
+`check-pr` 看到 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证批准 commit 是祖先；仓库应以 **merge commit** 合并，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
 
-默认 **`after-verified-merge`**：验证合并后删除 worktree，包括开发期 ignored/untracked 临时文件，使用受控的 `git worktree remove --force`。删除前仍复核批准 commit、祖先关系和 worktree HEAD；拒绝、冲突、未合并状态不清理。业务 JSON、不可变 artifact/review 和 `cleanedWorktreePath` 记录保留。
+`integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。
+
+默认 **`after-verified-merge`**：验证外部合并后删除 worktree（含 ignored/untracked 临时文件），再删除本地 `auto/req-*` 分支。删除前复核批准 commit、祖先关系和 worktree HEAD；拒绝、关闭、冲突、未合并状态不清理。业务 JSON、不可变 artifact/review、PR 引用以及 `cleanedWorktreePath`/`cleanedBranch` 记录保留。
 
 ## 中断与显式 reconciliation
 

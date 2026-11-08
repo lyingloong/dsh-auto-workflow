@@ -13,7 +13,7 @@
 | 文档 | 负责回答的问题 |
 | --- | --- |
 | [插件参考](<plugin-summary.md>) | 定义、节点、输入映射、模型回退、JSON command 协议、权限和状态存储。 |
-| [业务流程与保证](<workflow-summary.md>) | 用户优先、稳定 ID、detached worktree、3+3 池、revision/epoch、审批与保留策略。 |
+| [业务流程与保证](<workflow-summary.md>) | 用户优先、稳定 ID、每需求分支/worktree/PR、3+3 池、revision/epoch、审批与保留策略。 |
 | [运行生命周期与排障](<run-lifecycle.md>) | idle、Human 等待、入队、暂停/Stop、Host 中断及显式恢复。 |
 | [v1.0.0 发布说明](<releases/v1.0.0.md>) | 首发范围、固定版本安装和发布边界。 |
 | [更新记录](<../CHANGELOG.md>) | 公开版本重编号与废弃开发序列说明。 |

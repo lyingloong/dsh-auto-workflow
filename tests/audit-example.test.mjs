@@ -38,7 +38,7 @@ async function fixture(t, { materialize = false } = {}) {
   if (materialize) await cp(example, path.join(repo, 'docs', 'examples', 'development'), { recursive: true });
   await git(repo, 'add', '--all');
   await git(repo, 'commit', '-m', 'disposable audit base');
-  const store = await DevelopmentStore.create({ dataRoot: path.join(root, 'data'), repoRoot: repo });
+  const store = await DevelopmentStore.create({ dataRoot: path.join(root, 'data'), repoRoot: repo, integrationMode: 'local' });
   return { root, repo, store };
 }
 const requirement = (id, extra = {}) => ({ id, source: 'user', title: id, description: `Audit ${id}`, risk: 'low', ...extra });
@@ -149,7 +149,7 @@ test('audit coverage: complete production graph uses real command executor + mod
   assert.equal(after.implementation.artifactRevision, 3);
   assert.equal(after.worktreePath, before.worktreePath);
   const worktreePath = after.worktreePath;
-  assert.equal(await git(worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'), 'HEAD');
+  assert.equal(await git(worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'), 'auto/req-audit');
   await choose('merge-human', 'approve', 'Approve exact reviewed artifact');
   const merged = await fx.store.get('req-audit');
   assert.equal(merged.status, 'merged');

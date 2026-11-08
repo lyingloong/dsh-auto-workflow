@@ -1,4 +1,5 @@
-/** Local Git execution plane. No remotes, PR services, force removal or automatic reset. */
+/** Local Git execution plane: one requirement branch and one attached worktree.
+ * Remote publication and PR polling live in pr.mjs. */
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
@@ -39,14 +40,18 @@ function commitId(value) {
   if (typeof value !== 'string' || !/^[a-f0-9]{40,64}$/.test(value)) throw new Error('Invalid immutable commit');
   return value;
 }
+export function branchFor(id) {
+  if (typeof id !== 'string' || !/^req-[A-Za-z0-9._-]+$/.test(id)) throw new Error('Invalid requirement id for branch');
+  return `auto/req-${id.slice(4)}`;
+}
 async function checkedWorktree(store, item) {
   const expected = path.join(store.root, 'worktrees', item.id);
   if (item.worktreePath !== expected) throw new Error('Unexpected worktree path; refusing Git operation');
   inside(store.root, expected);
   if ((await lstat(expected)).isSymbolicLink() || path.resolve(await realpath(expected)) !== expected) throw new Error('Worktree must not be a symlink');
-  // Requirements use one retained detached worktree, never a per-requirement branch.
-  const head = await git(expected, 'rev-parse', '--abbrev-ref', 'HEAD');
-  if (head !== 'HEAD') throw new Error('Requirement worktree must remain detached; no per-requirement branch is allowed');
+  if (typeof item.branch !== 'string' || !item.branch) throw new Error('Requirement worktree has no recorded branch');
+  const head = await git(expected, 'symbolic-ref', '--short', 'HEAD');
+  if (head !== item.branch) throw new Error(`Requirement worktree must be checked out on ${item.branch}; found ${head}`);
   const common = path.resolve(expected, await git(expected, 'rev-parse', '--git-common-dir'));
   const rootCommon = path.resolve(store.config.repoRoot, await git(store.config.repoRoot, 'rev-parse', '--git-common-dir'));
   if (path.resolve(await realpath(common)) !== path.resolve(await realpath(rootCommon))) throw new Error('Worktree belongs to a different repository');
@@ -59,15 +64,19 @@ export async function prepare(store, id, claimId) {
       await checkedWorktree(store, item); item.status = 'engineering-ready'; return item;
     }
     const cwd = path.join(store.root, 'worktrees', item.id);
+    const branch = branchFor(id);
     await git(store.config.repoRoot, 'check-ref-format', '--branch', store.config.baseBranch);
+    await git(store.config.repoRoot, 'check-ref-format', '--branch', branch);
     const baseRevision = commitId(await git(store.config.repoRoot, 'rev-parse', `refs/heads/${store.config.baseBranch}`));
     if (await exists(cwd)) throw new Error('Unrecorded worktree exists; preserve and inspect rather than overwrite');
+    try { await git(store.config.repoRoot, 'rev-parse', '--verify', `refs/heads/${branch}`); throw new Error(`Requirement branch already exists: ${branch}`); }
+    catch (error) { if (!/Needed a single revision|unknown revision|invalid object name|bad revision/i.test(String(error.stderr ?? error.message))) throw error; }
     // Record intent BEFORE Git. A crash cannot make the worktree invisible to business recovery.
-    item.worktreePath = cwd; item.baseRevision = baseRevision; item.status = 'preparing';
+    item.worktreePath = cwd; item.baseRevision = baseRevision; item.branch = branch; item.status = 'preparing';
     await store.save(item);
-    // Detached worktree: commits are pinned by the worktree HEAD and merged by
-    // commit id. The requirement never gets its own branch.
-    await git(store.config.repoRoot, 'worktree', 'add', '--detach', cwd, baseRevision);
+    // One requirement owns one branch and one retained worktree checked out on
+    // that branch. PRs are opened from this branch; no detached requirement.
+    await git(store.config.repoRoot, 'worktree', 'add', '-b', branch, cwd, baseRevision);
     item.status = 'engineering-ready'; return item;
   });
 }
@@ -77,9 +86,17 @@ export async function snapshot(store, id, claimId, { verification, summary, expe
     if (item.status !== 'engineering' || expectedRevision !== item.revision || engineeringEpoch !== item.engineeringEpoch) throw new Error('Stale/unrequested engineering snapshot');
     const cwd = await checkedWorktree(store, item);
     await clean(cwd); await noMerge(cwd);
-    const commit = commitId(await git(cwd, 'rev-parse', 'HEAD'));
-    if (!await ancestor(cwd, item.baseRevision, commit)) throw new Error('Implementation no longer contains its recorded base');
+    const before = commitId(await git(cwd, 'rev-parse', 'HEAD'));
+    if (!await ancestor(cwd, item.baseRevision, before)) throw new Error('Implementation no longer contains its recorded base');
+    if (before === item.baseRevision) throw new Error('Requirement branch has no implementation changes to snapshot');
     text(verification, 'verification evidence'); text(summary, 'implementation summary');
+    // A PR owns exactly one commit. Squash every working/rework change back to
+    // the recorded base; the branch is force-pushed and the same PR is updated.
+    await git(cwd, 'reset', '--soft', item.baseRevision);
+    await git(cwd, 'commit', '-m', `${id} r${item.revision}: ${String(summary).split('\n')[0].slice(0, 120)}`);
+    await clean(cwd); await noMerge(cwd);
+    const commit = commitId(await git(cwd, 'rev-parse', 'HEAD'));
+    if (!await ancestor(cwd, item.baseRevision, commit)) throw new Error('Squashed implementation no longer contains its recorded base');
     const artifactRevision = (item.implementation?.artifactRevision ?? 0) + 1;
     const folder = path.join(store.root, 'artifacts', item.id);
     await store.checkedFile(folder); await mkdir(folder, { recursive: true });
@@ -146,22 +163,38 @@ async function checkApproval(store, item) {
   if (await git(cwd, 'rev-parse', 'HEAD') !== approval.commit) throw new Error('Approved worktree changed; review again');
   return approval;
 }
+export async function mergeBrief(store, id, claimId) {
+  return store.mutate(id, claimId, async item => {
+    if (item.status !== 'human-pending') throw new Error('Merge brief requires a passing review');
+    const latest = item.reviews.at(-1);
+    if (!latest || latest.decision !== 'pass' || latest.artifactRef !== item.implementation?.artifactRef) throw new Error('No passing review matches this implementation');
+    const artifact = await readJSON(await store.checkedFile(latest.artifactRef));
+    const review = await readJSON(await store.checkedFile(latest.reviewRef));
+    const brief = {
+      kind: 'merge-brief',
+      requirement: { id: item.id, title: item.title, description: item.description, risk: item.risk, revision: item.revision },
+      change: { summary: artifact.summary, verification: artifact.verification, commit: artifact.commit, artifactRef: latest.artifactRef },
+      review: { decision: review.decision, summary: review.summary, verification: review.verification, reviewer: review.reviewer },
+      risks: [review.summary].filter(Boolean),
+      pr: item.pr ?? null,
+      markdown: [
+        '## Requirement', `**${item.title}**`, '', item.description, '', `- risk: \`${item.risk}\``, `- requirement: \`${item.id}\` r${item.revision}`, '',
+        '## Implementation', artifact.summary, '', `- commit: \`${artifact.commit}\``, '',
+        '## Verification', artifact.verification, '',
+        '## Review', `${review.decision} — ${review.summary}`, '', `- reviewer: \`${review.reviewer}\``, `- review evidence: ${review.verification}`, '',
+        '## Risks / open questions', review.summary, '',
+        '## Decision', 'Approve to mark this PR ready, then merge it in GitHub. The workflow will only verify and clean up; it will not merge.',
+      ].join('\n'),
+    };
+    item.brief = brief;
+    return item;
+  });
+}
 export async function integrate(store, id, claimId) {
   return store.locked(() => store.mutate(id, claimId, async item => {
     if (item.status !== 'approved') throw new Error('Implementation not approved for merge');
     const approval = await checkApproval(store, item);
     await targetReady(store);
-    if (store.config.integrationMode === 'external-pr') {
-      const targetHead = commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD'));
-      if (!await ancestor(store.config.repoRoot, approval.commit, targetHead)) {
-        item.integration = { state: 'external-pending', approvedCommit: approval.commit, artifactRef: approval.artifactRef, targetHead, checkedAt: new Date().toISOString() };
-        await store.save(item);
-        return { item, outcome: 'external-pending' };
-      }
-      item.status = 'merged';
-      item.integration = { state: 'external-verified', approvedCommit: approval.commit, artifactRef: approval.artifactRef, mergeCommit: targetHead, verifiedAt: new Date().toISOString() };
-      return { item, outcome: 'merged' };
-    }
     await protectIgnoredTarget(store.config.repoRoot, approval.commit);
     const preMergeHead = commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD'));
     item.status = 'integrating';
@@ -220,8 +253,13 @@ export async function cleanup(store, id, claimId, { cleanup: explicitly = false 
     // removes ignored/untracked development leftovers, as requested; the
     // approved commit and immutable artifacts/reviews remain outside the worktree.
     await git(store.config.repoRoot, 'worktree', 'remove', '--force', cwd);
+    if (item.branch) {
+      try { await git(store.config.repoRoot, 'branch', '-D', item.branch); }
+      catch (error) { if (!/not found|unknown revision/i.test(String(error.stderr ?? error.message))) throw error; }
+    }
     item.cleanupRetention = null;
-    item.cleanedWorktreePath = cwd; item.worktreePath = null; item.cleanedAt = new Date().toISOString();
+    item.cleanedWorktreePath = cwd; item.cleanedBranch = item.branch ?? null; item.worktreePath = null; item.cleanedAt = new Date().toISOString();
     return { item, outcome: 'cleaned' };
   }), 'integration');
 }
+export { checkedWorktree, targetReady, checkApproval, ancestor, commitId, clean, noMerge };

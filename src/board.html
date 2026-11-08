@@ -142,6 +142,14 @@ button { cursor: pointer; }
 .human-detail-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .human-detail-note { width: 100%; min-height: 64px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); padding: 7px 8px; font: 11px/1.5 -apple-system, "Segoe UI", "PingFang SC", sans-serif; margin-top: 7px; }
 .human-detail-meta { color: var(--muted); font-size: 10.5px; line-height: 1.7; overflow-wrap: anywhere; }
+.human-brief { display: flex; flex-direction: column; gap: 9px; }
+.human-brief h4 { margin: 0 0 2px; font-size: 11px; color: var(--text); }
+.human-brief p { margin: 0; color: var(--text); font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; }
+.human-brief ul { margin: 0; padding-left: 18px; color: var(--text); font-size: 11.5px; line-height: 1.65; }
+.human-brief code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.human-brief .muted-note { padding: 0; }
+.human-brief details { color: var(--muted); font-size: 10.5px; }
+.human-brief summary { cursor: pointer; }
 .muted-note { padding: 10px 12px; color: var(--muted); font-size: 11px; }
 .detail-card { margin-top: 14px; }
 .detail-card.hide { display: none; }
@@ -906,6 +914,23 @@ button { cursor: pointer; }
     }
   }
 
+  function humanBriefMarkup(brief, fallback) {
+    if (!brief || brief.kind !== "merge-brief") return null;
+    const requirement = brief.requirement || {};
+    const change = brief.change || {};
+    const review = brief.review || {};
+    const risks = Array.isArray(brief.risks) ? brief.risks.filter(Boolean) : [];
+    const pr = brief.pr;
+    return '<div class="human-brief">' +
+      '<section><h4>需求</h4><p><strong>' + esc(requirement.title || '') + '</strong></p><p>' + esc(requirement.description || '') + '</p><div class="human-detail-meta">风险 ' + esc(requirement.risk || '—') + ' · revision ' + esc(requirement.revision ?? '—') + ' · ' + esc(requirement.id || '') + '</div></section>' +
+      '<section><h4>做了什么</h4><p>' + esc(change.summary || '—') + '</p><div class="human-detail-meta">验证：' + esc(change.verification || '—') + '<br>commit：<code>' + esc(change.commit || '—') + '</code></div></section>' +
+      '<section><h4>审查结论</h4><p>' + esc(review.summary || '—') + '</p><div class="human-detail-meta">' + esc(review.decision || '') + ' · ' + esc(review.reviewer || '') + '<br>验证：' + esc(review.verification || '—') + '</div></section>' +
+      '<section><h4>风险 / 待确认</h4>' + (risks.length ? '<ul>' + risks.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul>' : '<div class="muted-note">未记录额外风险；仍需人工判断。</div>') + '</section>' +
+      (pr?.url ? '<section><h4>PR</h4><p><a href="' + esc(pr.url) + '" target="_blank" rel="noreferrer">#' + esc(pr.number || '') + ' ' + esc(pr.url) + '</a></p></section>' : '') +
+      '<details><summary>查看原始输入</summary><pre class="human-detail-input">' + esc(fallback) + '</pre></details>' +
+      '</div>';
+  }
+
   function renderHumanDetail() {
     const card = $("humanDetailCard"), body = $("humanDetailBody"), hint = $("humanDetailHint");
     const item = humanDetailToken ? humanDetailItem(humanDetailToken) : null;
@@ -922,6 +947,8 @@ button { cursor: pointer; }
     const outcomes = Array.isArray(item.outcomes) ? item.outcomes : (node?.config?.outcomes || ["approve", "reject"]);
     const ref = humanDetailRef(item, token);
     const artifact = ref ? artifacts.get(artifactKey(ref)) : null;
+    const raw = artifact ? JSON.stringify(artifact.value, null, 2) : "";
+    const summary = artifact?.value?.brief ? humanBriefMarkup(artifact.value.brief, raw) : null;
     const input = !ref
       ? '<div class="muted-note">此 Human token 没有输入引用。请结合节点说明和留言处理。</div>'
       : artifact?.loading
@@ -929,7 +956,7 @@ button { cursor: pointer; }
         : artifact?.error
           ? '<div class="critical-error">读取输入失败：' + esc(artifact.error) + '<div class="human-detail-actions"><button class="btn" type="button" data-load-human-input="' + esc(ref) + '">重试</button></div></div>'
           : artifact
-            ? '<pre class="human-detail-input">' + esc(JSON.stringify(artifact.value, null, 2)) + '</pre>'
+            ? (summary ?? '<pre class="human-detail-input">' + esc(raw) + '</pre>')
             : '<div class="muted-note">尚未读取输入。<div class="human-detail-actions"><button class="btn" type="button" data-load-human-input="' + esc(ref) + '">读取输入</button></div></div>';
     card.classList.remove("hide");
     hint.textContent = safeText(item.title || node?.title || item.nodeId);

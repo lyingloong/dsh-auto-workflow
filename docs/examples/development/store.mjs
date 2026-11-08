@@ -65,20 +65,21 @@ export async function atomicJSON(file, value, { immutable = false } = {}) {
 
 export class DevelopmentStore {
   constructor(config) { this.config = config; this.root = config.dataRoot; }
-  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'local' }) {
+  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'pull-request', prRemote = 'origin' }) {
     dataRoot = absolute(dataRoot, 'dataRoot'); repoRoot = await realpath(absolute(repoRoot, 'repoRoot'));
     if (!['retain', 'after-verified-merge'].includes(cleanupPolicy)) throw new Error('Invalid cleanup policy');
-    if (!['local', 'external-pr'].includes(integrationMode)) throw new Error('Invalid integration mode');
+    if (!['local', 'pull-request'].includes(integrationMode)) throw new Error('Invalid integration mode');
+    if (typeof prRemote !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(prRemote)) throw new Error('Invalid PR remote');
     if (typeof baseBranch !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(baseBranch) || baseBranch.includes('..') || baseBranch.endsWith('/') || baseBranch.endsWith('.lock')) throw new Error('Unsafe base branch');
     await mkdir(dataRoot, { recursive: true });
     if ((await lstat(dataRoot)).isSymbolicLink() || path.resolve(await realpath(dataRoot)) !== dataRoot) throw new Error('Business root must be canonical, not a symlink');
     const existing = await optionalJSON(path.join(dataRoot, 'config.json'));
     if (existing) {
-      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode) throw new Error('Store configuration is immutable');
+      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode || (existing.prRemote ?? 'origin') !== prRemote) throw new Error('Store configuration is immutable');
       return DevelopmentStore.open(dataRoot);
     }
     for (const name of directories) await mkdir(path.join(dataRoot, name));
-    const config = { version: 2, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode };
+    const config = { version: 2, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode, prRemote };
     await atomicJSON(path.join(dataRoot, 'config.json'), config);
     return new DevelopmentStore(config);
   }
@@ -88,7 +89,9 @@ export class DevelopmentStore {
     if (config.version !== 2 || config.dataRoot !== dataRoot || path.resolve(await realpath(dataRoot)) !== dataRoot || (await lstat(dataRoot)).isSymbolicLink()) throw new Error('Invalid business store root');
     for (const name of directories) if ((await lstat(path.join(dataRoot, name))).isSymbolicLink()) throw new Error('Business directories cannot be symlinks');
     absolute(config.repoRoot, 'repoRoot');
-    config.integrationMode = config.integrationMode ?? 'local';
+    config.integrationMode = config.integrationMode ?? 'pull-request';
+    config.prRemote = config.prRemote ?? 'origin';
+    if (!['local', 'pull-request'].includes(config.integrationMode)) throw new Error('Unsupported legacy integration mode; use a new dataRoot');
     return new DevelopmentStore(config);
   }
   static async fromRef(dataRef) {
@@ -162,8 +165,8 @@ export class DevelopmentStore {
       reviews: previous?.reviews ?? [], feedback: previous?.feedback ?? [],
       requirementApproval: null, approval: null, claimId: null, engineeringEpoch: 0, pendingSnapshot: null,
     };
-    // A requirement retains one detached worktree path; it never owns a branch.
-    delete item.branch;
+    // Requirement revisions retain the same branch and attached worktree.
+    if (previous?.branch) item.branch = previous.branch;
     return this.save(item);
   }
   async upsertSeed(spec) {

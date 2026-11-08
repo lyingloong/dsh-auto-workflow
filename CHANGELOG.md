@@ -6,9 +6,12 @@
 - miner 先发散 3–5 个方向再收敛，覆盖 correctness、reliability、performance、UX/accessibility、tests/observability、security 和 maintainability，并读取现有需求避免重复。
 - 新增 `queue-check`：待实现需求（含 engineering）不超过工程师并发数时才自动挖掘，否则只 dispatch 已有队列。
 - 真实 merge 冲突改为自动 `git merge --abort` 并回同一需求工程返修，不再进入人工冲突节点。
-- 默认 `after-verified-merge`：验证合并后强制删除 worktree 及其 ignored/untracked 临时文件；批准 commit、artifact/review 和清理记录保留。
-- 新增 `integrationMode:"external-pr"`：外部 PR 在 GitHub merge 后，工作流只验证本地已更新的 base 分支包含批准 commit，不自行 merge；未出现时每 30 秒重试。
-- 看板增加 Human 待处理详情、简化节点图模式，以及按空闲/运行/等待/错误/关闭着色的节点方块网格。
+- 默认 `after-verified-merge`：验证合并后强制删除 worktree、本地 `auto/req-*` 分支及 ignored/untracked 临时文件；批准 commit、artifact/review、PR 引用和清理记录保留。
+- 改为每需求一个 `auto/req-*` 分支 + attached worktree；snapshot 把分支压成一个 commit，分支推动对应 PR。
+- 新增 pull-request 默认集成：第一次 snapshot 后推送分支并创建 draft PR；review pass 后用同一份 brief 更新 PR body；Human 批准后标记 ready；`check-pr` 只轮询自己的 `prNumber`，外部 merge 后 fetch/verify/cleanup，不自行 merge。
+- Human 待处理详情改为结构化 merge brief（需求、改动、验证、审查、风险），原始输入折叠；同一 brief 作为 PR body。
+- 看板节点队列改为可滚动彩色方块网格；简化节点图模式保留。
+- 旧的 detached worktree 数据不迁移、不重放；新流程使用新的 dataRoot。
 
 ## v1.0.0 — 首个公开发布
 
