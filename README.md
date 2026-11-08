@@ -4,7 +4,7 @@
 
 **“Auto”指已授权流程的持续调度，不是免审批。** Host 常驻期间，空闲或 Human 等待不会结束运行；状态与数据引用会落盘。Host 停止、插件重载或执行中断后，不自动重放不确定的工作，也不承诺跨 Git/HTTP 的掉电事务。
 
-当前发布为 **v1.0.1**；首个公开发布为 **v1.0.0**。仓库地址为 [lyingloong/dsh-auto-workflow](https://github.com/lyingloong/dsh-auto-workflow)。
+当前发布为 **v1.0.1**；首个公开发布为 **v1.0.0**。仓库地址为 [lyingloong/dsh-auto-workflow](https://github.com/lyingloong/dsh-auto-workflow)，项目页为 [lyingloong.github.io/dsh-auto-workflow](https://lyingloong.github.io/dsh-auto-workflow/)。
 
 ## 安装
 
