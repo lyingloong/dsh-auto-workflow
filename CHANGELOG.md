@@ -1,6 +1,8 @@
 # 更新记录
 
-## 未发布
+## v1.0.1 — 2026-11-08
+
+分支/worktree/PR 开发流、外部 merge 与 Human 批准后的 self-merge。
 
 - 初始化业务存储时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们只是发现方向，不是证据。
 - miner 先发散 3–5 个方向再收敛，覆盖 correctness、reliability、performance、UX/accessibility、tests/observability、security 和 maintainability，并读取现有需求避免重复。

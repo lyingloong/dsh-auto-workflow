@@ -19,7 +19,7 @@ npm pack --dry-run --json --ignore-scripts
 - CI 保留仓库原有 Ubuntu / Windows × Node.js 24.x 矩阵。**矩阵配置不是通过声明**：具体提交的完成状态以 [GitHub Actions](https://github.com/lyingloong/dsh-auto-workflow/actions/workflows/test.yml) 为准。Node.js 22.5 是声明的最低版本，本次未单独实跑该下限；也未对 macOS 作完整运行验收。
 - 所有测试使用一次性临时目录；Git 测试有独立本地身份，不修改用户仓库，不发布或推送。
 
-测试源码：[默认入口](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.0/tests/run.mjs)、[核心审计](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.0/tests/audit-core.test.mjs)、[集成审计](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.0/tests/audit-integration.test.mjs)、[示例审计](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.0/tests/audit-example.test.mjs)。测试不随运行安装包分发；源码和固定版本链接保留完整用例。
+测试源码：[默认入口](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.1/tests/run.mjs)、[核心审计](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.1/tests/audit-core.test.mjs)、[集成审计](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.1/tests/audit-integration.test.mjs)、[示例审计](https://github.com/lyingloong/dsh-auto-workflow/blob/v1.0.1/tests/audit-example.test.mjs)。测试不随运行安装包分发；源码和固定版本链接保留完整用例。
 
 ## 真实 Harness / 模型 / Git 验收
 

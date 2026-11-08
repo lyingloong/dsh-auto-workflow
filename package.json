@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-workflow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "description": "dsh-auto-workflow: persistent, concurrent node-graph workflows for DeepSeek Harness: agent, command, HTTP, human, fan-out/join, gate and subworkflow nodes with ordered model fallback, permissions, artifacts and a live board.",
   "type": "module",
