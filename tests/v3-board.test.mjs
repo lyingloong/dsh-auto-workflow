@@ -109,7 +109,7 @@ test('board and client scripts compile and expose only the final package identit
   assert.doesNotThrow(() => new vm.Script(script));
   assert.doesNotThrow(() => new vm.Script(client));
   assert.match(html, /Human 节点待处理/);
-  assert.match(html, /Auto Workflow/);
+  assert.match(html, /dsh-auto-workflow/);
   assert.match(html, /\/plugins\/dsh-auto-workflow\/api/);
   assert.doesNotMatch(html + client, /dsh-agent-team-workflow|dsh-durable-workflow|team_workflow_/);
   assert.doesNotMatch(html, /需求队列|seedsReady|state\.queue|run\?\.context|token\?\.input\b|token\?\.output\b|\/public\//);

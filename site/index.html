@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Auto Workflow — persistent node-graph workflows for DeepSeek Harness</title>
-  <meta name="description" content="Auto Workflow is a persistent, concurrent node-graph workflow plugin for DeepSeek Harness: agents, commands, HTTP and Human decisions in one durable graph, with a PR-native development example.">
+  <title>dsh-auto-workflow — persistent node-graph workflows for DeepSeek Harness</title>
+  <meta name="description" content="dsh-auto-workflow is a persistent, concurrent node-graph workflow plugin for DeepSeek Harness: agents, commands, HTTP and Human decisions in one durable graph, with a PR-native development example.">
   <link rel="canonical" href="https://lyingloong.github.io/dsh-auto-workflow/">
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
   <meta name="theme-color" content="#ffffff">
@@ -15,7 +15,7 @@
 
   <header class="site-header">
     <div class="container nav">
-      <a class="site-name" href="./">Auto Workflow</a>
+      <a class="site-name" href="./">dsh-auto-workflow</a>
       <nav aria-label="Main navigation">
         <ul class="nav-links">
           <li><a href="#overview">Overview</a></li>
@@ -31,7 +31,7 @@
   <main id="main" class="container">
     <section class="hero" aria-labelledby="hero-title">
       <p class="eyebrow">DeepSeek Harness plugin · v1.0.1</p>
-      <h1 id="hero-title">Auto Workflow</h1>
+      <h1 id="hero-title">dsh-auto-workflow</h1>
       <p class="tagline">Persistent, concurrent workflows for DeepSeek Harness.</p>
       <p class="lede">Agents, commands, HTTP calls and Human decisions in one durable graph. The plugin core is a generic runtime; the PR-native development flow is one replaceable example, not the product definition.</p>
       <p class="hero-cn">持久化、并发的通用节点图运行时；自动开发流只是示例，不是功能边界。</p>
@@ -85,7 +85,7 @@
         <span>core runtime · one engine</span>
       </div>
       <figure class="diagram">
-        <img src="./assets/architecture.svg" alt="Architecture diagram: the Auto Workflow engine runs in the DSH Host with scheduler, packet state, artifacts and permissions; it drives agent, command, HTTP and Human executors and exposes a private board." width="900" height="330">
+        <img src="./assets/architecture.svg" alt="Architecture diagram: the dsh-auto-workflow engine runs in the DSH Host with scheduler, packet state, artifacts and permissions; it drives agent, command, HTTP and Human executors and exposes a private board." width="900" height="330">
         <figcaption>
           The core engine owns scheduling, state, artifacts and permission checks. Executors only do the work; the private board is where Humans see details and decide.
         </figcaption>
@@ -113,7 +113,7 @@
 
   <footer class="site-footer">
     <div class="container">
-      <p><strong>Auto Workflow</strong> · dsh-auto-workflow · MIT</p>
+      <p><strong>dsh-auto-workflow</strong> · MIT</p>
       <p>Built for DeepSeek Harness. <a href="https://github.com/lyingloong/dsh-auto-workflow">GitHub</a></p>
     </div>
   </footer>

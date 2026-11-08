@@ -1,6 +1,6 @@
 # dsh-auto-workflow
 
-**dsh-auto-workflow**（短名 Auto Workflow）是 DeepSeek Harness 的持久化、并发节点图工作流插件。它让模型、命令和人工决策在同一张图中协作：新任务以独立 packet 进入，某项等待 Human 审批时，其他任务仍可继续。
+**dsh-auto-workflow**是 DeepSeek Harness 的持久化、并发节点图工作流插件。它让模型、命令和人工决策在同一张图中协作：新任务以独立 packet 进入，某项等待 Human 审批时，其他任务仍可继续。
 
 **“Auto”指已授权流程的持续调度，不是免审批。** Host 常驻期间，空闲或 Human 等待不会结束运行；状态与数据引用会落盘。Host 停止、插件重载或执行中断后，不自动重放不确定的工作，也不承诺跨 Git/HTTP 的掉电事务。
 

@@ -1,6 +1,6 @@
 # dsh-auto-workflow 插件参考
 
-**dsh-auto-workflow**（短名 Auto Workflow）是 DeepSeek Harness 的通用节点图运行时，负责调度、packet 隔离、数据引用、权限检查与看板。需求、优先级、风险、Git worktree 和合并策略属于 [开发示例](<examples/development/README.md>)，不是插件 schema。
+**dsh-auto-workflow**是 DeepSeek Harness 的通用节点图运行时，负责调度、packet 隔离、数据引用、权限检查与看板。需求、优先级、风险、Git worktree 和合并策略属于 [开发示例](<examples/development/README.md>)，不是插件 schema。
 
 安装与常用工具顺序见 [首页](<../README.md>)；此页保留定义和协议参考。package `1.0.1`、定义 `apiVersion: 2`、run `version: 3`、示例 business store `version: 2` 分别编号。
 

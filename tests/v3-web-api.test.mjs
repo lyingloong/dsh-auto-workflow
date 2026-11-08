@@ -102,7 +102,7 @@ test('the native board URL uses the exact private root and requires its token', 
   const page = await fetch(board);
   assert.equal(page.status, 200);
   const html = await page.text();
-  assert.match(html, /Auto Workflow/);
+  assert.match(html, /dsh-auto-workflow/);
   assert.match(html, /Human 节点待处理/);
   assert.doesNotMatch(html, /dsh-agent-team-workflow|team_workflow_|需求队列/);
 

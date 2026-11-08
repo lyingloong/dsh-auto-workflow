@@ -1,5 +1,5 @@
 /**
- * Auto Workflow Web API and private board origin.
+ * dsh-auto-workflow Web API and private board origin.
  *
  * Routes are session-scoped and share the tools' persistent execution owner and
  * artifact store. The board page is served both on the DSH web server (behind

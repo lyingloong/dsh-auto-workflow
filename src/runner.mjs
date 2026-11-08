@@ -477,7 +477,7 @@ export class WorkflowRunner {
     });
   }
 
-  async stop(session, reason = 'Stopped from the Auto Workflow board') {
+  async stop(session, reason = 'Stopped from the dsh-auto-workflow board') {
     return this.locked(session, async () => {
       const entry = this.active.get(session);
       if (entry) {

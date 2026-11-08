@@ -6,7 +6,7 @@
 
 ## One current architecture, explicit version boundaries
 
-`dsh-auto-workflow` 1.0.0 (short display name: Auto Workflow) is the first curated public release.
+`dsh-auto-workflow` 1.0.0 is the first curated public release.
 Earlier experimental release/tag names were withdrawn by the maintainer; their
 commits remain in Git history. Package SemVer, graph apiVersion, run-state version
 and the example's business-store version are separate contracts.

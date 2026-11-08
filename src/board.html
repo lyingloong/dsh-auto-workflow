@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Auto Workflow · 工作流看板</title>
+<title>dsh-auto-workflow · 工作流看板</title>
 <style>
 :root {
   color-scheme: light;
@@ -245,7 +245,7 @@ button { cursor: pointer; }
   <div class="top-inner">
     <div class="brand">
       <span class="mark">⌘</span>
-      <div><h1 id="name">dsh-auto-workflow</h1><p id="sub">Auto Workflow · 工作流看板 · 正在加载…</p></div>
+      <div><h1 id="name">dsh-auto-workflow</h1><p id="sub">dsh-auto-workflow · 工作流看板 · 正在加载…</p></div>
     </div>
     <div class="top-actions">
       <span class="status" id="status">未运行</span>
@@ -1166,7 +1166,7 @@ button { cursor: pointer; }
   function render() {
     if (!state) return;
     if (!state.defined || !state.definition) {
-      $("name").textContent = "Auto Workflow";
+      $("name").textContent = "dsh-auto-workflow";
       $("sub").textContent = "当前会话还没有工作流";
       $("status").textContent = "未定义";
       $("status").className = "status";
@@ -1179,8 +1179,8 @@ button { cursor: pointer; }
       return;
     }
     const definition = state.definition;
-    $("name").textContent = safeText(definition.name || "Auto Workflow");
-    $("sub").textContent = "Auto Workflow · " + definition.nodes.length + " 节点 · " + definition.edges.length + " 边";
+    $("name").textContent = safeText(definition.name || "dsh-auto-workflow");
+    $("sub").textContent = "工作流看板 · " + definition.nodes.length + " 节点 · " + definition.edges.length + " 边";
     const status = $("status");
     status.className = "status " + (Object.hasOwn(STATUS, state.run?.status) ? state.run.status : "");
     status.textContent = safeText(state.run ? (STATUS[state.run.status] || state.run.status) : "未运行");

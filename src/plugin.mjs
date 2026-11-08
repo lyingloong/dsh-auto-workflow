@@ -1,5 +1,5 @@
 /**
- * Auto Workflow DSH adapter.
+ * dsh-auto-workflow DSH adapter.
  *
  * This is the only host-facing entry point: it mounts agent, command and HTTP
  * executors, resolves provider lanes, exposes the persistent packet runtime as
@@ -27,7 +27,7 @@ const DEFAULT_CONFIG = {
   agentTimeoutMs: 0,
 };
 
-const USAGE = `Auto Workflow is a persistent, concurrent node-graph workflow engine.
+const USAGE = `dsh-auto-workflow is a persistent, concurrent node-graph workflow engine.
 
 A workflow is nodes plus edges (apiVersion 2). One run stays mounted while packets move through it; new packets can arrive at any time. Node types:
 - agent: a model subagent. Config: prompt?, lane?, provider?, model?, models?, reasoningEffort?, cwd?, timeoutMs?, maxFailures?, outcomes?. "models" is an ordered fallback list (max 8); the next candidate is used only when a provider/model call fails. Each candidate may set its own reasoningEffort from the model catalogue. There is NO default task deadline; timeoutMs/agentTimeoutMs is opt-in and 0 disables it.

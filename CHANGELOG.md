@@ -17,7 +17,7 @@
 
 ## v1.0.0 — 首个公开发布
 
-`dsh-auto-workflow`（短名 Auto Workflow）是 DeepSeek Harness 的持久化、并发节点图工作流插件。仓库为 [lyingloong/dsh-auto-workflow](https://github.com/lyingloong/dsh-auto-workflow)，包名、看板和工具身份统一使用 `dsh-auto-workflow` / `auto_workflow_*`。
+`dsh-auto-workflow`是 DeepSeek Harness 的持久化、并发节点图工作流插件。仓库为 [lyingloong/dsh-auto-workflow](https://github.com/lyingloong/dsh-auto-workflow)，包名、看板和工具身份统一使用 `dsh-auto-workflow` / `auto_workflow_*`。
 
 ### 首发内容
 

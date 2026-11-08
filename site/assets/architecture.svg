@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 330" role="img" aria-labelledby="title desc">
-  <title id="title">Auto Workflow architecture</title>
-  <desc id="desc">Inside the DSH Host, the Auto Workflow engine owns scheduling, packet state, artifacts and permissions. It drives agent, command, HTTP and Human executors, and exposes a private board.</desc>
+  <title id="title">dsh-auto-workflow architecture</title>
+  <desc id="desc">Inside the DSH Host, the dsh-auto-workflow engine owns scheduling, packet state, artifacts and permissions. It drives agent, command, HTTP and Human executors, and exposes a private board.</desc>
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #252b31; }
     .box { fill: #fff; stroke: #cfd7dd; stroke-width: 1.2; }
@@ -20,7 +20,7 @@
   <text x="46" y="48" class="tiny">DSH HOST</text>
 
   <rect x="48" y="64" width="262" height="228" rx="8" class="engine"/>
-  <text x="66" y="90" class="label">Auto Workflow engine</text>
+  <text x="66" y="90" class="label">dsh-auto-workflow engine</text>
   <text x="66" y="108" class="sub">control plane</text>
   <rect x="66" y="120" width="226" height="34" rx="5" class="box"/>
   <text x="78" y="142" class="sub">scheduler · concurrency · leases</text>

@@ -1,6 +1,6 @@
 # 业务流程与保证：GitHub 项目本地持续开发
 
-这是 Auto Workflow（`dsh-auto-workflow`）的**唯一主业务示例**：把 GitHub 仓库克隆到本地，每个需求在独立分支/attached worktree 中开发，由工作流发布自己的 draft PR；经过审查、Human brief 和外部 Codex/人 merge 后，只验证并清理。不是托管机器人，不自动监听聊天或抓取 GitHub Issues，也不自行 merge 远端 PR。
+这是 `dsh-auto-workflow`的**唯一主业务示例**：把 GitHub 仓库克隆到本地，每个需求在独立分支/attached worktree 中开发，由工作流发布自己的 draft PR；经过审查、Human brief 和外部 Codex/人 merge 后，只验证并清理。不是托管机器人，不自动监听聊天或抓取 GitHub Issues，也不自行 merge 远端 PR。
 
 [完整操作指南](<examples/development/README.md>) 负责安装后的准备与操作；本页集中说明业务契约。实现由 [节点图](<examples/development/workflow.json>)、[业务存储](<examples/development/store.mjs>)、[本地 Git 模块](<examples/development/worktrees.mjs>) 和 [JSON driver](<examples/development/driver.mjs>) 组成。插件只调度通用 packet 和引用，不解释业务 `dataRef`。
 

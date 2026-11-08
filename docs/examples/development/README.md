@@ -1,6 +1,6 @@
 # GitHub 项目本地持续开发
 
-这是 `dsh-auto-workflow`（短名 Auto Workflow）的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 brief，外部 Codex/人 merge PR 后，工作流只验证并清理。示例是应用代码，插件只提供通用调度；没有远端 Issue/聊天监听器或外部审批端点。
+这是 `dsh-auto-workflow`的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 brief，外部 Codex/人 merge PR 后，工作流只验证并清理。示例是应用代码，插件只提供通用调度；没有远端 Issue/聊天监听器或外部审批端点。
 
 **阅读文档不会启动任何操作。** 下面是供操作者检查、替换路径并明确授权后执行的说明，不是对当前仓库或远端的自动操作。首次使用先看 [项目首页](<../../../README.md>)；业务不变量集中在 [流程与保证](<../../workflow-summary.md>)。
 
