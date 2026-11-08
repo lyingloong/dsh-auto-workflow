@@ -174,8 +174,9 @@ test('simplified graph mode hides only busy retry gates', () => {
 
 test('node queue renders every node as a status-colored square tile', () => {
   assert.match(html, /\.queue-grid \{[\s\S]*?grid-template-columns/);
+  assert.match(html, /\.queue-grid \{[\s\S]*?max-height: clamp\(200px, 34vh, 390px\)[\s\S]*?overflow-y: auto/);
   assert.match(html, /id="queueList"[^>]*role="list"[^>]*aria-label="节点队列（方块）"/);
-  assert.doesNotMatch(html, /queue-item|区内滚动|可滚动/);
+  assert.doesNotMatch(html, /queue-item|queue-list/);
   const { api, get } = board(), state = fixture();
   state.run.tokens.push({ id: 'bad-worker', nodeId: 'worker', status: 'failed' });
   api.setState(state); api.renderQueue();
@@ -184,7 +185,7 @@ test('node queue renders every node as a status-colored square tile', () => {
   assert.match(markup, /queue-tile error/);
   assert.match(markup, /queue-tile waiting/);
   assert.match(markup, /data-select-node="other"/);
-  assert.match(get('queueHint').textContent, /3 节点.*方块颜色=状态/);
+  assert.match(get('queueHint').textContent, /3 节点.*方块颜色=状态.*滚动/);
 });
 
 test('all nodes remain reachable as tiles without a sliding queue window', () => {

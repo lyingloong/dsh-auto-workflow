@@ -105,7 +105,7 @@ button { cursor: pointer; }
 .control-row input { accent-color: var(--brand); }
 .control-hint { margin-left: auto; color: var(--muted); font-size: 10px; }
 .queue-card { min-width: 0; }
-.queue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 6px; padding: 8px; }
+.queue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 6px; padding: 8px; max-height: clamp(200px, 34vh, 390px); overflow-y: auto; overflow-x: hidden; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
 .queue-tile { position: relative; min-width: 0; aspect-ratio: 1; display: flex; flex-direction: column; align-items: stretch; justify-content: space-between; gap: 2px; padding: 7px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); color: var(--text); text-align: left; cursor: pointer; overflow: hidden; }
 .queue-tile:hover { filter: brightness(1.03); border-color: var(--line-strong); }
 .queue-tile.idle { border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); background: color-mix(in srgb, var(--ok) 7%, var(--panel)); }
@@ -983,7 +983,7 @@ button { cursor: pointer; }
   function renderQueue() {
     const nodes = state.definition?.nodes || [];
     const queued = nodes.reduce((sum, node) => sum + nodeStat(node).queued, 0);
-    $("queueHint").textContent = nodes.length + " 节点 · " + queued + " 排队 · 方块颜色=状态";
+    $("queueHint").textContent = nodes.length + " 节点 · " + queued + " 排队 · 方块颜色=状态 · 区域内滚动";
     $("queueList").innerHTML = nodes.length
       ? nodes.map(node => {
           const stat = nodeStat(node), style = STYLE[node.type] || { glyph: "?" };
