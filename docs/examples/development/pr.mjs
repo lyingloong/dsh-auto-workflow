@@ -131,6 +131,7 @@ export async function ready(store, id, claimId) {
     await checkApproval(store, item);
     if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
     const before = normalisePr(await viewPr(store, item.pr.number));
+    item.pr = { ...item.pr, ...before };
     if (before.state === 'MERGED') {
       await verifyExternalMerge(store, item);
       return { item, outcome: 'merged', pr: item.pr };
@@ -159,7 +160,7 @@ async function verifyExternalMerge(store, item) {
   item.status = 'merged';
   item.integration = {
     state: 'verified',
-    mechanism: 'pull-request',
+    mechanism: item.pr.selfMergedByWorkflow ? 'self-merge' : 'external-pr',
     pr: item.pr,
     mergeCommit: commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD')),
     verifiedAt: new Date().toISOString(),
@@ -181,6 +182,30 @@ export async function check(store, id, claimId) {
       item.integration = { state: 'pr-closed', pr: item.pr, checkedAt: new Date().toISOString() };
       item.feedback.push({ scope: 'integration', artifactRef: item.implementation?.artifactRef, note: 'PR was closed without merge; return to engineering. Reopen or update the same PR after new commits.' });
       return { item, outcome: 'closed', pr: item.pr };
+    }
+    // External reviewers may merge at any time after Human approval. If they
+    // have not, the approved workflow merges its own PR with a merge commit
+    // after the configured grace period.
+    const readyAt = Date.parse(item.pr.readyAt ?? '');
+    if (pr.state === 'OPEN' && Number.isFinite(readyAt) && Date.now() - readyAt >= store.config.selfMergeAfterMs) {
+      try { await gh(store.config.repoRoot, 'pr', 'merge', String(pr.number), '--merge'); }
+      catch (error) {
+        // A concurrent external merge can make gh report an already-merged PR;
+        // re-read before turning that race into a packet failure.
+        const raced = normalisePr(await viewPr(store, item.pr.number));
+        if (raced.state !== 'MERGED') throw error;
+        item.pr = { ...item.pr, ...raced };
+        await verifyExternalMerge(store, item);
+        return { item, outcome: 'merged', pr: item.pr };
+      }
+      item.pr.selfMergedByWorkflow = true;
+      item.pr.selfMergeAt = new Date().toISOString();
+      const after = normalisePr(await viewPr(store, item.pr.number));
+      item.pr = { ...item.pr, ...after };
+      if (after.state === 'MERGED') {
+        await verifyExternalMerge(store, item);
+        return { item, outcome: 'merged', pr: item.pr };
+      }
     }
     return { item, outcome: 'waiting', pr: item.pr };
   }), 'integration');

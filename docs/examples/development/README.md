@@ -58,11 +58,11 @@ command 节点执行的是固定命令，例如 `node docs/examples/development/
 继续在目标项目根目录运行；以下 `dataRoot` 与项目并列，位于项目外：
 
 ```powershell
-$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","cleanupPolicy":"after-verified-merge","integrationMode":"pull-request","prRemote":"origin"}'
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","cleanupPolicy":"after-verified-merge","integrationMode":"pull-request","prRemote":"origin","selfMergeAfterMs":300000}'
 node docs/examples/development/driver.mjs init
 ```
 
-配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR，外部 merge 后只验证/清理。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback；不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 仍是 `version: 2`，不等于包版本；旧 detached worktree 数据被拒绝，不迁移或重置。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。
+配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR。Human 批准后 PR 标记 ready；外部 Codex/你可以在宽限期内直接 merge；如果宽限期结束仍未 merge，工作流自己用 **merge commit** merge 该 PR，再验证/清理。`selfMergeAfterMs` 默认 `300000`（5 分钟），设为 `0` 表示批准后立即 self-merge。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback；不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 仍是 `version: 2`，不等于包版本；旧 detached worktree 数据被拒绝，不迁移或重置。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。
 
 ### 用户 intake
 
@@ -179,12 +179,13 @@ Human 引擎决定由后续 command 转成业务记录；旧需求 revision 的�
 
 1. 第一次 snapshot 后 push `auto/req-<id>`，创建 draft PR，base 为配置的 `baseBranch`；
 2. review/rework 继续更新同一分支/PR，并 force-push 新的单 commit；
-3. Human `approve` 后 `ready-pr` 调 GitHub 把 PR 标记 ready；
-4. Codex/你在 GitHub 审核并 merge；
-5. `check-pr` 每 30 秒查询该 PR。看到 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base、验证批准 commit 是祖先，记录 `merged` 并进入 cleanup；
-6. PR 被关闭未合并时回到同一需求工程返修，不自动本地 merge。
+3. Human `approve` 后 `ready-pr` 调 GitHub 把 PR 标记 ready，并记录 `readyAt`；
+4. `check-pr` 每 30 秒查询该 PR。宽限期 `selfMergeAfterMs` 内，Codex/你可以直接 merge；
+5. 如果宽限期结束 PR 仍 open，工作流调用 `gh pr merge --merge` **自己 merge 该 PR**，记录 `selfMergedByWorkflow`；
+6. 外部 merge 或 self-merge 后，`check-pr` fetch `origin/baseBranch`、fast-forward 本地 base、验证批准 commit 是祖先，记录 `merged` 并进入 cleanup；
+7. PR 被关闭未合并时回到同一需求工程返修，不自动本地 merge。
 
-仓库应使用 **merge commit**。squash/rebase 会改变批准 commit 的 SHA，`check-pr` 会明确报错，而不是悄悄放宽绑定。
+`selfMergeAfterMs` 默认 5 分钟，`0` 表示批准后立即 self-merge。无论外部还是自己 merge，都必须使用 **merge commit**；squash/rebase 会改变批准 commit 的 SHA，`check-pr` 会明确报错，而不是悄悄放宽绑定。
 
 ### 本地 fallback
 
@@ -198,7 +199,7 @@ Human 引擎决定由后续 command 转成业务记录；旧需求 revision 的�
 
 PR 被外部 close 或 merge 失败不会被自动重放。先检查 PR/分支/worktree 和业务状态，再显式续接。
 
-**工作流会 push 自己的需求分支并创建/更新 PR，但不会 merge 远端、不会批准 GitHub PR、不会部署。** 仓库保护分支、CI 和 merge 规则继续适用。
+**工作流会 push 自己的需求分支并创建/更新 PR；Human 批准后，外部可以先 merge，宽限期后工作流也可以用自己的 token merge 这个 PR。** 工作流不会替其他 PR 背书、不会绕过 branch protection、不会部署；仓库保护分支、CI 和 merge 规则继续适用。
 
 ## 6. 保留与清理
 
@@ -259,7 +260,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 
 | Stage | 额外输入 / 主要行为 |
 | --- | --- |
-| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）；初始化固定配置并写入 baseline discovery seeds。 |
+| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`selfMergeAfterMs`（默认 5 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
 | `requirement` / `seed` | `dataRoot` 与 `requirement` / `seed` 对象；显式 intake。seed 可带 `origin`、`category`、`relatedRequirementId`；可选，不强制。 |
 | `claim` / `seed-batch` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；返回 ready items 或 idle。 |
 | `queue-check` | `dataRoot`、`maxPending`；返回 `mine` 或 `skip`，统计待实现（含 engineering）需求。 |
@@ -276,7 +277,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | `brief` | pass 后生成 Human/PR 共用的结构化 brief，并更新 PR body。 |
 | `merge-decision` | 当前 artifact、decision，返修/拒绝需反馈；精确产物批准。 |
 | `integration-route` | 读取 store 配置，返回 `pr` 或 `local`。 |
-| `ready-pr` / `check-pr` | 标记自己的 PR ready；轮询同一 `prNumber`，返回 `merged`/`waiting`/`closed`。 |
+| `ready-pr` / `check-pr` | 标记自己的 PR ready；轮询同一 `prNumber`，宽限期内等外部 merge，超时后自己 merge；返回 `merged`/`waiting`/`closed`。 |
 | `integrate` | 仅 local fallback：本地 merged / 冲突自动 abort 后 revise。 |
 | `recover-integration` | 仅异常兜底：操作者已手工恢复 Git 后，`decision:resolved\|aborted`、note；不在主图。 |
 | `cleanup` | 默认 `after-verified-merge` 自动强删已合并 worktree，并删除本地需求分支；`retain` 是显式例外。 |

@@ -1,4 +1,4 @@
-﻿# 验证范围与已知边界
+# 验证范围与已知边界
 
 这份公开说明保留可核查的测试方法和结果，不发布维护者的本机目录、访问 token、会话 ID 或临时工作目录截图。完整原始验收材料留在维护者本地；公开回归测试在仓库中。
 
@@ -13,7 +13,7 @@ npm run verify:release
 npm pack --dry-run --json --ignore-scripts
 ```
 
-- Windows / Node.js 24.12.0 的最后一轮功能回归为 **128 项通过、0 失败、0 跳过**，包含核心、执行器、宿主集成、Web API、看板、分支/PR 示例及独立审计回归。
+- Windows / Node.js 24.12.0 的最后一轮功能回归为 **129 项通过、0 失败、0 跳过**，包含核心、执行器、宿主集成、Web API、看板、分支/PR 示例及独立审计回归。
 - `test:runner` 与默认入口使用同一组测试；`test:watch` 使用明确文件入口，不把测试目录当作模块运行。
 - `verify:release` 检查包名、版本、exports、必要文件、包内 Markdown 链接、私有信息泄露以及唯一示例的 3+3/root6 配置。它只读文件，不执行模型或业务命令。
 - CI 保留仓库原有 Ubuntu / Windows × Node.js 24.x 矩阵。**矩阵配置不是通过声明**：具体提交的完成状态以 [GitHub Actions](https://github.com/lyingloong/dsh-auto-workflow/actions/workflows/test.yml) 为准。Node.js 22.5 是声明的最低版本，本次未单独实跑该下限；也未对 macOS 作完整运行验收。

@@ -61,11 +61,11 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 
 通用 Human 节点只记录小型 outcome/output；后续示例命令才写入业务决定。需求拒绝、实现返修/拒绝都需要有意义的反馈。工作流发布自己的需求 PR，但外部 merge 是独立的 GitHub 决定；Human 审批精确产物不等于允许工作流自行 merge。
 
-Publish/ready/check 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；ready 前必须有精确 Human 批准；check 只轮询工作流自己记录的 `prNumber`。工作流 push `auto/req-*` 分支、创建/编辑自己的 draft PR，但不使用自己的 token merge。
+Publish/ready/check 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；ready 前必须有精确 Human 批准；check 只轮询工作流自己记录的 `prNumber`。工作流 push `auto/req-*` 分支、创建/编辑自己的 draft PR。Human 批准后，外部可以在宽限期内 merge；如果宽限期 `selfMergeAfterMs` 到期仍未 merge，工作流用自己的 token 对该 PR 执行 **merge commit**，不绕过 branch protection。
 
 `brief` 在 review pass 后生成结构化摘要（需求、改动、验证、审查、风险），同一份内容进入 PR body 和看板 Human 详情；原始 artifact 折叠。review/rework 会 force-push 同一 PR 的新单 commit，并重新绑定 artifact/review/Human approval。
 
-`check-pr` 看到 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证批准 commit 是祖先；仓库应以 **merge commit** 合并，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
+`check-pr` 看到 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证批准 commit 是祖先；外部和 self-merge 都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
 
 `integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。
 

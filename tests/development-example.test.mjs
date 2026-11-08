@@ -27,17 +27,18 @@ async function fixture(t, options = {}) {
   const store = await DevelopmentStore.create({ dataRoot: path.join(root, 'data'), repoRoot: repo, integrationMode: 'local', ...options });
   return { root, repo, store };
 }
-async function withPullRequestFixture(t, { root, repo }) {
+async function withPullRequestFixture(t, { root, repo }, { readyMerges = true } = {}) {
   const remote = path.join(root, 'remote.git');
   await git(root, 'init', '--bare', remote);
   await git(repo, 'remote', 'add', 'origin', remote);
   await git(repo, 'push', '-u', 'origin', 'main');
   const fakeGh = fileURLToPath(new URL('./fixtures/fake-gh.mjs', import.meta.url));
   const state = path.join(root, 'fake-pr-state.json');
-  const previous = { DSH_GH_BIN: process.env.DSH_GH_BIN, DSH_GH_SCRIPT: process.env.DSH_GH_SCRIPT, DSH_FAKE_PR_STATE: process.env.DSH_FAKE_PR_STATE };
+  const previous = { DSH_GH_BIN: process.env.DSH_GH_BIN, DSH_GH_SCRIPT: process.env.DSH_GH_SCRIPT, DSH_FAKE_PR_STATE: process.env.DSH_FAKE_PR_STATE, DSH_FAKE_READY_MERGES: process.env.DSH_FAKE_READY_MERGES };
   process.env.DSH_GH_BIN = process.execPath;
   process.env.DSH_GH_SCRIPT = fakeGh;
   process.env.DSH_FAKE_PR_STATE = state;
+  process.env.DSH_FAKE_READY_MERGES = readyMerges ? '1' : '0';
   t.after(() => {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
@@ -227,10 +228,28 @@ test('one requirement branch + one worktree + one PR survives review, external m
   assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
   const merged = await check(store, item.id, item.claimId);
   assert.equal(merged.outcome, 'merged');
-  assert.equal((await store.get(item.id)).integration.mechanism, 'pull-request');
+  assert.equal((await store.get(item.id)).integration.mechanism, 'external-pr');
   assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
   assert.equal(await git(repo, 'branch', '--list', 'auto/req-branch'), '');
   await assert.rejects(lstat(item.cwd), { code: 'ENOENT' });
+});
+
+test('after Human approval the workflow self-merges its PR when external merge does not happen', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request', selfMergeAfterMs: 0 });
+  await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store, repo } = base;
+  const item = await prepared(store, 'req-self');
+  const artifact = await implement(store, item);
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'approve', actor: 'test-human' });
+  assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
+  const merged = await check(store, item.id, item.claimId);
+  assert.equal(merged.outcome, 'merged');
+  assert.equal((await store.get(item.id)).integration.mechanism, 'self-merge');
+  assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
+  assert.equal(await git(repo, 'branch', '--list', 'auto/req-self'), '');
 });
 
 test('real worktree survives review feedback/rejection; implementation and reviews pin immutable revisions', async t => {

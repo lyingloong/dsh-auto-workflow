@@ -21,6 +21,13 @@ const publicPr = pr => ({
   headRefOid: pr.headRefOid, mergeCommit: pr.mergeCommit ?? null, mergedAt: pr.mergedAt ?? null,
   closed: pr.state === 'CLOSED', reviewDecision: null,
 });
+const mergePr = pr => {
+  execFileSync('git', ['-C', cwd, 'merge', '--no-ff', `refs/heads/${pr.branch}`, '-m', 'External PR merge'], { encoding: 'utf8' });
+  const mergeCommit = execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  execFileSync('git', ['-C', cwd, 'push', 'origin', pr.base], { encoding: 'utf8' });
+  pr.state = 'MERGED'; pr.isDraft = false; pr.mergedAt = new Date().toISOString(); pr.mergeCommit = mergeCommit;
+  write(state);
+};
 const fail = message => { process.stderr.write(message + '\n'); process.exit(1); };
 if (args[0] !== 'pr') fail(`unsupported command: ${args.join(' ')}`);
 const command = args[1];
@@ -47,12 +54,13 @@ if (command === 'list') {
 } else if (command === 'ready') {
   const pr = find(state, args[2]);
   if (!pr) fail('no fake PR');
-  if (pr.state === 'MERGED') process.exit(0);
-  execFileSync('git', ['-C', cwd, 'merge', '--no-ff', `refs/heads/${pr.branch}`, '-m', 'External PR merge'], { encoding: 'utf8' });
-  const mergeCommit = execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  execFileSync('git', ['-C', cwd, 'push', 'origin', pr.base], { encoding: 'utf8' });
-  pr.state = 'MERGED'; pr.isDraft = false; pr.mergedAt = new Date().toISOString(); pr.mergeCommit = mergeCommit;
+  pr.isDraft = false;
   write(state);
+  if (process.env.DSH_FAKE_READY_MERGES !== '0') mergePr(pr);
+} else if (command === 'merge') {
+  const pr = find(state, args[2]);
+  if (!pr) fail('no fake PR');
+  if (pr.state !== 'MERGED') mergePr(pr);
 } else if (command === 'reopen') {
   const pr = find(state, args[2]);
   if (!pr) fail('no fake PR');
