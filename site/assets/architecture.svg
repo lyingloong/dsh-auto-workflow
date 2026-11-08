@@ -55,7 +55,7 @@
   <rect x="668" y="162" width="166" height="34" rx="5" class="box"/>
   <text x="680" y="184" class="sub">private Web API</text>
   <rect x="668" y="204" width="166" height="34" rx="5" class="box"/>
-  <text x="680" y="226" class="sub">Git worktree / PR</text>
+  <text x="680" y="226" class="sub">host workspace / cwd</text>
   <rect x="668" y="246" width="166" height="34" rx="5" class="box"/>
   <text x="680" y="268" class="sub">host filesystem</text>
 </svg>

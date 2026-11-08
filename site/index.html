@@ -33,11 +33,12 @@
       <p class="eyebrow">DeepSeek Harness plugin · v1.0.1</p>
       <h1 id="hero-title">Auto Workflow</h1>
       <p class="tagline">Persistent, concurrent workflows for DeepSeek Harness.</p>
-      <p class="lede">Agents, commands, HTTP calls and Human decisions in one durable graph. One task waiting for a Human never stops the others.</p>
-      <p class="hero-cn">持久化、并发的节点图工作流。</p>
+      <p class="lede">Agents, commands, HTTP calls and Human decisions in one durable graph. The plugin core is a generic runtime; the PR-native development flow is one replaceable example, not the product definition.</p>
+      <p class="hero-cn">持久化、并发的通用节点图运行时；自动开发流只是示例，不是功能边界。</p>
       <ul class="hero-links">
         <li><a class="button" href="#start">Get started</a></li>
         <li><a href="https://github.com/lyingloong/dsh-auto-workflow">View source</a></li>
+        <li><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/examples/development/README.md">Development example</a></li>
         <li><a href="https://github.com/lyingloong/dsh-auto-workflow/releases/tag/v1.0.1">Release v1.0.1</a></li>
       </ul>
     </section>
@@ -49,16 +50,16 @@
       </div>
       <div class="key-grid">
         <article>
-          <h3>Persistent runs</h3>
+          <h3>Generic runtime</h3>
+          <p>Graphs, node types, artifacts, permissions and the board are the core. No specific development process is built into the plugin.</p>
+        </article>
+        <article>
+          <h3>Persistent and concurrent</h3>
           <p>New packets arrive anytime. Human waits and slow tasks do not stop unrelated work.</p>
         </article>
         <article>
-          <h3>Mixed execution</h3>
-          <p>Agent, command, HTTP, Human, fan-out, gate and subworkflow nodes share one scheduler.</p>
-        </article>
-        <article>
-          <h3>PR-native development</h3>
-          <p>One requirement, one branch and worktree, one PR — with external merge or Human-approved self-merge.</p>
+          <h3>Examples, not the product</h3>
+          <p>The 3-engineer/PR workflow is bundled application code. Replace it with your own graph, roles and merge policy.</p>
         </article>
       </div>
       <p class="section-note"><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/README.md">Read the full overview in the repository →</a></p>
@@ -66,13 +67,13 @@
 
     <section id="workflow" class="section" aria-labelledby="workflow-title">
       <div class="section-head">
-        <h2 id="workflow-title">Requirement lifecycle</h2>
-        <span>branch → PR → merge → cleanup</span>
+        <h2 id="workflow-title">Example: requirement lifecycle</h2>
+        <span>bundled example · not core</span>
       </div>
       <figure class="diagram">
         <img src="./assets/lifecycle.svg" alt="Lifecycle diagram: requirement, branch and worktree, draft PR, review and brief, ready PR, external merge or Human-approved self-merge, verify and cleanup." width="900" height="180">
         <figcaption>
-          Every requirement gets its own branch, worktree and PR. External reviewers can merge directly; after a grace period, Human approval can authorize a workflow self-merge. Both paths use a merge commit.
+          This is the bundled development example: one requirement, one branch/worktree, one PR. External reviewers can merge directly; after a grace period, Human approval can authorize a workflow self-merge. The plugin core does not require Git, PRs or GitHub.
         </figcaption>
       </figure>
       <p class="section-note"><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/examples/development/README.md">Development workflow, branch rules and merge policy →</a></p>
@@ -81,12 +82,12 @@
     <section id="architecture" class="section" aria-labelledby="architecture-title">
       <div class="section-head">
         <h2 id="architecture-title">Architecture</h2>
-        <span>one engine, explicit boundaries</span>
+        <span>core runtime · one engine</span>
       </div>
       <figure class="diagram">
         <img src="./assets/architecture.svg" alt="Architecture diagram: the Auto Workflow engine runs in the DSH Host with scheduler, packet state, artifacts and permissions; it drives agent, command, HTTP and Human executors and exposes a private board." width="900" height="330">
         <figcaption>
-          The engine owns scheduling, state, artifacts and permission checks. Executors only do the work; the private board is where Humans see the brief and decide.
+          The core engine owns scheduling, state, artifacts and permission checks. Executors only do the work; the private board is where Humans see details and decide.
         </figcaption>
       </figure>
       <p class="section-note"><a href="https://github.com/lyingloong/dsh-auto-workflow/blob/main/docs/plugin-summary.md">Plugin model, nodes and protocol reference →</a></p>
