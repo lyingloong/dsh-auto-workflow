@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, realpath, lstat } from 'node:fs/promises';
 import { DevelopmentStore, atomicJSON } from '../docs/examples/development/store.mjs';
 import { git, prepare, snapshot, recordReview, integrate, cleanup, mergeBrief } from '../docs/examples/development/worktrees.mjs';
-import { publish, ready, check, updateBody } from '../docs/examples/development/pr.mjs';
+import { publish, ready, check, selfMerge, updateBody } from '../docs/examples/development/pr.mjs';
 import { stage } from '../docs/examples/development/driver.mjs';
 import { normalizeDefinition } from '../src/definition.mjs';
 import { newRunState, enqueue, run, decide, waitingHumanTokens } from '../src/runtime.mjs';
@@ -96,10 +96,14 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.ok(graph.edges.some(edge => edge.from === 'queue-check' && edge.to === 'seed-batch' && edge.on === 'mine'));
   assert.ok(graph.edges.some(edge => edge.from === 'snapshot' && edge.to === 'publish-pr' && edge.on === 'complete'));
   assert.ok(graph.edges.some(edge => edge.from === 'record-review' && edge.to === 'brief' && edge.on === 'pass'));
-  assert.ok(graph.edges.some(edge => edge.from === 'brief' && edge.to === 'merge-human' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'brief' && edge.to === 'integration-route' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'integration-route' && edge.to === 'merge-human' && edge.on === 'local'));
+  assert.ok(graph.edges.some(edge => edge.from === 'integration-route' && edge.to === 'ready-pr' && edge.on === 'pr'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'begin-engineering' && edge.on === 'closed'));
   assert.ok(graph.nodes.find(node => node.id === 'pr-gate').type === 'gate');
   assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'pr-gate' && edge.on === 'waiting'));
+  assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'self-merge-human' && edge.on === 'approval-needed'));
+  assert.ok(graph.edges.some(edge => edge.from === 'self-merge-human' && edge.to === 'approve-self' && edge.on === 'approve'));
   assert.ok(graph.nodes.find(node => node.id === 'seed-fanout').config.detached);
   assert.ok(graph.nodes.find(node => node.id === 'producer-work').config.detached);
   assert.ok(graph.edges.some(edge => edge.from === 'producer-work' && edge.to === 'mine-gate'));
@@ -224,7 +228,6 @@ test('one requirement branch + one worktree + one PR survives review, external m
   await updateBody(store, brief);
   const prFile = JSON.parse(await readFile(prState, 'utf8'));
   assert.match(prFile.prs[0].body, /Pinned commit reviewed/);
-  await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'approve', actor: 'test-human' });
   assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
   const merged = await check(store, item.id, item.claimId);
   assert.equal(merged.outcome, 'merged');
@@ -243,9 +246,11 @@ test('after Human approval the workflow self-merges its PR when external merge d
   await publish(store, item.id, item.claimId);
   await pass(store, item, artifact);
   await mergeBrief(store, item.id, item.claimId);
-  await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'approve', actor: 'test-human' });
   assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
-  const merged = await check(store, item.id, item.claimId);
+  const waiting = await check(store, item.id, item.claimId);
+  assert.equal(waiting.outcome, 'approval-needed');
+  await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'approve', actor: 'test-human' });
+  const merged = await selfMerge(store, item.id, item.claimId);
   assert.equal(merged.outcome, 'merged');
   assert.equal((await store.get(item.id)).integration.mechanism, 'self-merge');
   assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
@@ -379,8 +384,7 @@ test('producer cycles independently of disabled workers, claims each seed once a
 });
 
 test('whole graph reaches both pool caps of three; one human wait never stalls other items or new arrivals', { timeout: 60_000 }, async t => {
-  const base = await fixture(t, { integrationMode: 'pull-request' });
-  await withPullRequestFixture(t, base);
+  const base = await fixture(t);
   const { store, repo } = base;
   for (let index = 0; index < 6; index++) await store.upsertRequirement(user(`req-graph-${index}`));
   const graph = normalizeDefinition(JSON.parse(await readFile(graphFile, 'utf8')));

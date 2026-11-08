@@ -27,7 +27,7 @@ npm pack --dry-run --json --ignore-scripts
 
 | 验收项 | 观测结果 |
 | --- | --- |
-| 完整图 | 首发验收使用 51 节点、78 边；当前未发布示例为 59 节点、95 边（新增 backlog 水位、分支/worktree、draft PR、brief、PR 轮询和默认清理） |
+| 完整图 | 首发验收使用 51 节点、78 边；当前未发布示例为 63 节点、103 边（新增 backlog 水位、分支/worktree、draft PR、brief、外部 merge、Human self-merge fallback 和默认清理） |
 | 需求 | 6 个真实需求全部实现、审查、批准并在隔离仓库中本地合并 |
 | 原生模型执行 | 14 次：工程 7 次、审查 7 次 |
 | 同刻并发 | 3 个工程师与 3 个审查者的原生子会话同时存在并执行，总并发 6 |

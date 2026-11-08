@@ -71,8 +71,8 @@ async function executeStage(name, input) {
     const item = await store.get(id);
     return result(store.config.integrationMode === 'pull-request' ? 'pr' : 'local', store.envelope(item));
   }
-  if (name === 'publish-pr' || name === 'ready-pr' || name === 'check-pr') {
-    const action = name === 'publish-pr' ? pullRequests.publish : name === 'ready-pr' ? pullRequests.ready : pullRequests.check;
+  if (name === 'publish-pr' || name === 'ready-pr' || name === 'check-pr' || name === 'self-merge-pr') {
+    const action = name === 'publish-pr' ? pullRequests.publish : name === 'ready-pr' ? pullRequests.ready : name === 'self-merge-pr' ? pullRequests.selfMerge : pullRequests.check;
     const changed = await action(store, id, claimId);
     return result(changed.outcome, store.envelope(changed.item, { ...(changed.item.implementation ?? {}), pr: changed.item.pr ?? null, integration: changed.item.integration ?? null }));
   }

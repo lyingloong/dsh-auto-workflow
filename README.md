@@ -33,7 +33,7 @@ dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow
 2. **输入真实需求**：初始化业务存储（会放入 baseline discovery seeds），提交用户需求；可选用 `driver seed` 补充相关证据 seed。用户需求优先级固定为 `0`；示例不监听所有聊天，也不自动抓取 GitHub Issues。
 3. **授权并定义**：检查 [示例图](<docs/examples/development/workflow.json>) 与模型提示词，明确批准命令 allowlist，再调用 `auto_workflow_define`。HTTP 默认拒绝；agent 工具权限另行控制。
 4. **开始运行**：`auto_workflow_start` 绑定项目的绝对 `cwd` 和 `{ "dataRoot": "…" }`；`auto_workflow_run` 挂载运行。在同一 run 中向 `mine-gate` **仅 enqueue 一次** producer，后续需求继续送入现有运行。
-5. **人工/外部审核**：每个需求在 `auto/req-<id>` 分支和独立 worktree 中开发；第一次 snapshot 后推送分支并创建 draft PR。看板 Human 详情显示结构化 brief，批准后 PR 标记 ready。外部 Codex/你可以在宽限期内直接 merge；如果未 merge，工作流在 `selfMergeAfterMs` 到期后自己用 merge commit merge 该 PR，再验证并清理 worktree。默认 `after-verified-merge` 会删除 worktree（含开发期临时文件），提交和不可变记录保留。
+5. **审核与合并**：每个需求在 `auto/req-<id>` 分支和独立 worktree 中开发；第一次 snapshot 后推送分支并创建 draft PR。review pass + 结构化 brief 后 PR 标记 ready，外部 Codex/你可以直接 merge。若宽限期 `selfMergeAfterMs` 内仍未 merge，才进入 `self-merge-human`；Human 同意后工作流自己用 merge commit merge 该 PR，再验证并清理 worktree。默认 `after-verified-merge` 会删除 worktree（含开发期临时文件），提交和不可变记录保留。
 
 ### 主业务图
 

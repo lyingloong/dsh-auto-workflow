@@ -19,11 +19,11 @@
   → reviewer 池（最多 3；每需求只分配一位）
     revise → 同 ID / 分支 / worktree / PR 的下一轮开发
   → brief 生成 Human/PR 共用摘要
-  → Human merge 待办池
-    revise → 同 ID 返修；reject → 保留，不合并
-    approve 精确产物 → 标记自己的 PR ready
-  → Codex/人在 GitHub merge PR
-  → check-pr 轮询自己的 PR，验证批准 commit 在 base
+  → ready-pr 标记自己的 PR ready
+  → Codex/人可直接 merge PR（无需内部 Human）
+  → 宽限期仍 open：self-merge-human
+    approve → self-merge-pr 用 merge commit 自己 merge；revise/reject 保留或返修
+  → check-pr 轮询自己的 PR，验证 review commit 在 base
   → 默认 after-verified-merge：清理 worktree 和本地需求分支
 ```
 
@@ -61,11 +61,11 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 
 通用 Human 节点只记录小型 outcome/output；后续示例命令才写入业务决定。需求拒绝、实现返修/拒绝都需要有意义的反馈。工作流发布自己的需求 PR，但外部 merge 是独立的 GitHub 决定；Human 审批精确产物不等于允许工作流自行 merge。
 
-Publish/ready/check 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；ready 前必须有精确 Human 批准；check 只轮询工作流自己记录的 `prNumber`。工作流 push `auto/req-*` 分支、创建/编辑自己的 draft PR。Human 批准后，外部可以在宽限期内 merge；如果宽限期 `selfMergeAfterMs` 到期仍未 merge，工作流用自己的 token 对该 PR 执行 **merge commit**，不绕过 branch protection。
+Publish/ready/check 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；review pass + brief 后即可 ready，不需要内部 Human 先批准；check 只轮询工作流自己记录的 `prNumber`。工作流 push `auto/req-*` 分支、创建/编辑自己的 draft PR。外部可以直接 merge ready PR；只有宽限期 `selfMergeAfterMs` 到期仍未 merge 时，才进入 `self-merge-human`，Human 同意后工作流用自己的 token 对该 PR 执行 **merge commit**，不绕过 branch protection。
 
 `brief` 在 review pass 后生成结构化摘要（需求、改动、验证、审查、风险），同一份内容进入 PR body 和看板 Human 详情；原始 artifact 折叠。review/rework 会 force-push 同一 PR 的新单 commit，并重新绑定 artifact/review/Human approval。
 
-`check-pr` 看到 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证批准 commit 是祖先；外部和 self-merge 都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
+`check-pr` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；宽限期后仍未合并时，`self-merge-human` 才请求 Human 批准，`self-merge-pr` 再用 merge commit 合并并验证。外部和 self-merge 都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
 
 `integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。
 

@@ -623,6 +623,53 @@
       "config": {
         "delayMs": 1000
       }
+    },
+    {
+      "id": "self-merge-human",
+      "type": "human",
+      "title": "Approve workflow self-merge",
+      "config": {
+        "title": "External merge did not happen within the grace period. Approve this exact PR for the workflow to self-merge?",
+        "outcomes": [
+          "approve",
+          "revise",
+          "reject"
+        ]
+      }
+    },
+    {
+      "id": "approve-self",
+      "type": "command",
+      "title": "Record self-merge approval",
+      "config": {
+        "command": "node docs/examples/development/driver.mjs merge-decision",
+        "json": true
+      },
+      "inputs": {
+        "dataRef": ".dataRef",
+        "claimId": ".claimId",
+        "artifactRef": ".record-review.output.artifactRef",
+        "decision": "approve",
+        "note": ".note",
+        "actor": ".actor"
+      }
+    },
+    {
+      "id": "self-merge-pr",
+      "type": "command",
+      "title": "Self-merge approved PR",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs self-merge-pr",
+        "json": true
+      }
+    },
+    {
+      "id": "busy-self-merge-pr",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
     }
   ],
   "edges": [
@@ -977,11 +1024,6 @@
       "on": "pass"
     },
     {
-      "from": "brief",
-      "to": "merge-human",
-      "on": "complete"
-    },
-    {
       "from": "ready-pr",
       "to": "check-pr",
       "on": "complete"
@@ -1042,16 +1084,6 @@
       "on": "merged"
     },
     {
-      "from": "approve-merge",
-      "to": "integration-route",
-      "on": "approve"
-    },
-    {
-      "from": "integration-route",
-      "to": "integrate",
-      "on": "local"
-    },
-    {
       "from": "integration-route",
       "to": "ready-pr",
       "on": "pr"
@@ -1100,6 +1132,61 @@
       "from": "busy-integration-route",
       "to": "integration-route",
       "on": "complete"
+    },
+    {
+      "from": "brief",
+      "to": "integration-route",
+      "on": "complete"
+    },
+    {
+      "from": "approve-merge",
+      "to": "integrate",
+      "on": "approve"
+    },
+    {
+      "from": "check-pr",
+      "to": "self-merge-human",
+      "on": "approval-needed"
+    },
+    {
+      "from": "self-merge-human",
+      "to": "approve-self",
+      "on": "approve"
+    },
+    {
+      "from": "self-merge-human",
+      "to": "request-changes",
+      "on": "revise"
+    },
+    {
+      "from": "self-merge-human",
+      "to": "reject-merge",
+      "on": "reject"
+    },
+    {
+      "from": "approve-self",
+      "to": "self-merge-pr",
+      "on": "approve"
+    },
+    {
+      "from": "self-merge-pr",
+      "to": "cleanup",
+      "on": "merged"
+    },
+    {
+      "from": "self-merge-pr",
+      "to": "busy-self-merge-pr",
+      "on": "busy"
+    },
+    {
+      "from": "busy-self-merge-pr",
+      "to": "self-merge-pr",
+      "on": "complete"
+    },
+    {
+      "from": "integration-route",
+      "to": "merge-human",
+      "on": "local"
     }
   ]
 }

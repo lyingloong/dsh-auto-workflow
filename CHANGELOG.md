@@ -8,7 +8,7 @@
 - 真实 merge 冲突改为自动 `git merge --abort` 并回同一需求工程返修，不再进入人工冲突节点。
 - 默认 `after-verified-merge`：验证合并后强制删除 worktree、本地 `auto/req-*` 分支及 ignored/untracked 临时文件；批准 commit、artifact/review、PR 引用和清理记录保留。
 - 改为每需求一个 `auto/req-*` 分支 + attached worktree；snapshot 把分支压成一个 commit，分支推动对应 PR。
-- 新增 pull-request 默认集成：第一次 snapshot 后推送分支并创建 draft PR；review pass 后用同一份 brief 更新 PR body；Human 批准后标记 ready。外部可在 `selfMergeAfterMs` 宽限期内直接 merge；超时后工作流自己用 merge commit merge 自己的 PR，再 fetch/verify/cleanup。
+- 新增 pull-request 默认集成：第一次 snapshot 后推送分支并创建 draft PR；review pass 后用同一份 brief 更新 PR body 并标记 ready，外部可直接 merge，不需要内部 Human 先批准。只有 `selfMergeAfterMs` 宽限期后仍未合并时，才进入 `self-merge-human`；Human 同意后工作流自己用 merge commit 合并，再 fetch/verify/cleanup。
 - Human 待处理详情改为结构化 merge brief（需求、改动、验证、审查、风险），原始输入折叠；同一 brief 作为 PR body。
 - 看板节点队列改为可滚动彩色方块网格；简化节点图模式保留。
 - 旧的 detached worktree 数据不迁移、不重放；新流程使用新的 dataRoot。

@@ -222,7 +222,8 @@ export async function integrate(store, id, claimId) {
 }
 async function verifyMerged(store, item) {
   await targetReady(store);
-  if (!await ancestor(store.config.repoRoot, commitId(item.approval.commit))) throw new Error('Approved commit is not in integration branch; no cleanup permitted');
+  const commit = item.approval?.commit ?? item.implementation?.commit;
+  if (!commit || !await ancestor(store.config.repoRoot, commitId(commit))) throw new Error('Reviewed/approved commit is not in integration branch; no cleanup permitted');
   item.status = 'merged';
   item.integration = { ...item.integration, state: 'verified', mergeCommit: commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD')), verifiedAt: new Date().toISOString() };
 }
@@ -244,11 +245,12 @@ export async function recoverIntegration(store, id, claimId, { decision, note })
 export async function cleanup(store, id, claimId, { cleanup: explicitly = false } = {}) {
   return store.locked(() => store.mutate(id, claimId, async item => {
     if (!explicitly && store.config.cleanupPolicy === 'retain') return { item, outcome: 'retained' };
-    if (item.status !== 'merged' || !['verified', 'external-verified'].includes(item.integration?.state)) throw new Error('Cleanup requires a verified human-approved merge');
+    if (item.status !== 'merged' || !['verified', 'external-verified'].includes(item.integration?.state)) throw new Error('Cleanup requires a verified merge');
     await verifyMerged(store, item);
     if (!item.worktreePath) return { item, outcome: 'cleaned' };
     const cwd = await checkedWorktree(store, item);
-    if (await git(cwd, 'rev-parse', 'HEAD') !== item.approval.commit) throw new Error('Worktree changed since approval; preserve it');
+    const mergedCommit = item.approval?.commit ?? item.implementation?.commit;
+    if (!mergedCommit || await git(cwd, 'rev-parse', 'HEAD') !== mergedCommit) throw new Error('Worktree changed since review; preserve it');
     // The merge is already verified on the integration branch. --force also
     // removes ignored/untracked development leftovers, as requested; the
     // approved commit and immutable artifacts/reviews remain outside the worktree.

@@ -127,8 +127,7 @@ export async function publish(store, id, claimId) {
 
 export async function ready(store, id, claimId) {
   return store.locked(() => store.mutate(id, claimId, async item => {
-    if (item.status !== 'approved') throw new Error('PR cannot be marked ready before Human approval');
-    await checkApproval(store, item);
+    if (!['human-pending', 'approved'].includes(item.status)) throw new Error('PR can only be marked ready after review/brief');
     if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
     const before = normalisePr(await viewPr(store, item.pr.number));
     item.pr = { ...item.pr, ...before };
@@ -151,10 +150,21 @@ async function syncBase(store) {
   await targetReady(store);
 }
 
+async function verifyReviewedCommit(store, item) {
+  const implementation = item.implementation;
+  const latest = item.reviews?.at(-1);
+  if (!implementation?.commit || latest?.decision !== 'pass' || latest.artifactRef !== implementation.artifactRef) {
+    throw new Error('PR merge requires the current implementation to have a passing review');
+  }
+  const cwd = await checkedWorktree(store, item); await clean(cwd);
+  if (await git(cwd, 'rev-parse', 'HEAD') !== implementation.commit) throw new Error('PR worktree changed since review; refusing merge verification');
+  return implementation.commit;
+}
+
 async function verifyExternalMerge(store, item) {
-  await checkApproval(store, item);
+  const commit = await verifyReviewedCommit(store, item);
   await syncBase(store);
-  if (!await ancestor(store.config.repoRoot, commitId(item.approval.commit))) {
+  if (!await ancestor(store.config.repoRoot, commitId(commit))) {
     throw new Error('PR is marked merged but the approved commit is not in the base branch. The repository may use squash/rebase merges; this workflow requires a merge commit.');
   }
   item.status = 'merged';
@@ -183,31 +193,44 @@ export async function check(store, id, claimId) {
       item.feedback.push({ scope: 'integration', artifactRef: item.implementation?.artifactRef, note: 'PR was closed without merge; return to engineering. Reopen or update the same PR after new commits.' });
       return { item, outcome: 'closed', pr: item.pr };
     }
-    // External reviewers may merge at any time after Human approval. If they
-    // have not, the approved workflow merges its own PR with a merge commit
-    // after the configured grace period.
+    // External reviewers may merge the ready PR at any time. Only after the
+    // grace period do we ask Human whether our workflow should self-merge.
     const readyAt = Date.parse(item.pr.readyAt ?? '');
     if (pr.state === 'OPEN' && Number.isFinite(readyAt) && Date.now() - readyAt >= store.config.selfMergeAfterMs) {
-      try { await gh(store.config.repoRoot, 'pr', 'merge', String(pr.number), '--merge'); }
-      catch (error) {
-        // A concurrent external merge can make gh report an already-merged PR;
-        // re-read before turning that race into a packet failure.
-        const raced = normalisePr(await viewPr(store, item.pr.number));
-        if (raced.state !== 'MERGED') throw error;
-        item.pr = { ...item.pr, ...raced };
-        await verifyExternalMerge(store, item);
-        return { item, outcome: 'merged', pr: item.pr };
-      }
-      item.pr.selfMergedByWorkflow = true;
-      item.pr.selfMergeAt = new Date().toISOString();
-      const after = normalisePr(await viewPr(store, item.pr.number));
-      item.pr = { ...item.pr, ...after };
-      if (after.state === 'MERGED') {
-        await verifyExternalMerge(store, item);
-        return { item, outcome: 'merged', pr: item.pr };
-      }
+      return { item, outcome: 'approval-needed', pr: item.pr };
     }
     return { item, outcome: 'waiting', pr: item.pr };
+  }), 'integration');
+}
+
+export async function selfMerge(store, id, claimId) {
+  return store.locked(() => store.mutate(id, claimId, async item => {
+    if (item.status !== 'approved') throw new Error('Self-merge requires an explicit Human approval');
+    await checkApproval(store, item);
+    if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
+    let pr = normalisePr(await viewPr(store, item.pr.number));
+    if (pr.state === 'MERGED') {
+      item.pr = { ...item.pr, ...pr };
+      await verifyExternalMerge(store, item);
+      return { item, outcome: 'merged', pr: item.pr };
+    }
+    if (pr.state === 'CLOSED') throw new Error('PR is closed; rework before self-merge');
+    try { await gh(store.config.repoRoot, 'pr', 'merge', String(pr.number), '--merge'); }
+    catch (error) {
+      // An external merge can win this race; re-read before failing the packet.
+      pr = normalisePr(await viewPr(store, item.pr.number));
+      item.pr = { ...item.pr, ...pr };
+      if (pr.state !== 'MERGED') throw error;
+      await verifyExternalMerge(store, item);
+      return { item, outcome: 'merged', pr: item.pr };
+    }
+    item.pr.selfMergedByWorkflow = true;
+    item.pr.selfMergeAt = new Date().toISOString();
+    pr = normalisePr(await viewPr(store, item.pr.number));
+    item.pr = { ...item.pr, ...pr };
+    if (pr.state !== 'MERGED') throw new Error('Self-merge command returned without a merged PR');
+    await verifyExternalMerge(store, item);
+    return { item, outcome: 'merged', pr: item.pr };
   }), 'integration');
 }
 

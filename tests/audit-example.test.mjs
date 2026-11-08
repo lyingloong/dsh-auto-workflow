@@ -187,7 +187,7 @@ test('audit coverage: real command graph permits simultaneous three engineers pl
   });
   for (let index = 0; index < 6; index++) await fx.store.upsertRequirement(requirement(`req-pool-${index}`));
   await enqueue(fx.state, { input: { dataRoot: fx.store.root } }, fx.io);
-  await run(fx.state, fx.executors, { io: fx.io, maxSteps: 150 });
+  await run(fx.state, fx.executors, { io: fx.io, maxSteps: 300 });
   assert.equal(simultaneous, true);
   assert.deepEqual(peak, { engineer: 3, reviewer: 3 });
   assert.equal(waitingHumanTokens(fx.state).length, 6);
