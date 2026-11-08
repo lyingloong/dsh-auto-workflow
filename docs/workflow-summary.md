@@ -65,6 +65,8 @@ Publish/ready/check 串行使用 store 级 integration lock。PR 发布前必须
 
 `brief` 在 review pass 后生成结构化摘要（需求、改动、验证、审查、风险），同一份内容进入 PR body 和看板 Human 详情；原始 artifact 折叠。review/rework 会 force-push 同一 PR 的新单 commit，并重新绑定 artifact/review/Human approval。
 
+PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论不承担状态。workflow 只在 head 匹配、CI 全绿或无 CI、review thread 全 resolve 时设置 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签；head 变化、CI 失败或 thread 未关闭时撤销标签。完整的角色头、finding 和合并门规则见 [PR 交流规范](<examples/development/pr-protocol.md>)。
+
 `check-pr` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；宽限期后仍未合并时，`self-merge-human` 才请求 Human 批准，`self-merge-pr` 再用 merge commit 合并并验证。外部和 self-merge 都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
 
 `integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。

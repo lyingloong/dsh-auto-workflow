@@ -49,6 +49,14 @@ async function executeStage(name, input) {
     const item = await store.proposeSeed({ seedId: input.seedId, claimId: input.claimId, proposal: input.proposal });
     return item ? result('queued', store.envelope(item)) : result('idle', { dataRef: ref, cwd: store.config.repoRoot, label: 'No proposal; seed retained as idle' });
   }
+  if (name === 'pr-init') {
+    const baseBranch = input.baseBranch ?? 'main';
+    const repoRoot = input.dataRoot
+      ? (await DevelopmentStore.open(absolute(input.dataRoot, 'dataRoot'))).config.repoRoot
+      : absolute(input.repoRoot, 'repoRoot');
+    const initialized = await pullRequests.initPr({ config: { repoRoot, baseBranch } }, { apply: Boolean(input.apply) });
+    return result(initialized.ready ? 'complete' : 'blocked', initialized);
+  }
   const store = await DevelopmentStore.fromRef(input.dataRef);
   const id = path.basename(input.dataRef, '.json'), claimId = input.claimId;
   if (name === 'route') {

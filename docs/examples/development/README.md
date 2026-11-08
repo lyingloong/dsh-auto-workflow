@@ -11,7 +11,8 @@
 | [workflow.json](<workflow.json>) | 一个 run 中的周期 producer、分支/worktree、3+3 工作池、PR 发布/轮询与 Human brief。 |
 | [store.mjs](<store.mjs>) | 稳定 ID、优先级/FIFO、claim、revision/epoch、审批与反馈。 |
 | [worktrees.mjs](<worktrees.mjs>) | 每需求分支/attached worktree、单 commit 快照、review、brief 与受限清理。 |
-| [pr.mjs](<pr.mjs>) | push 需求分支、创建/更新自己的 draft PR、标记 ready、轮询外部 merge。 |
+| [pr.mjs](<pr.mjs>) | push 需求分支、创建/更新自己的 draft PR、维护 PR 状态块/标签、轮询外部 merge。 |
+| [pr-protocol.md](<pr-protocol.md>) | 角色头、状态块、finding、merge-ready 标签和 PR 初始化约定。 |
 | [driver.mjs](<driver.mjs>) | command 节点使用的 JSON-only CLI。 |
 
 开始前逐项确认：
@@ -21,6 +22,7 @@
 - 选择一个**项目及其 worktree 外部**的绝对、canonical `dataRoot`，不使用 symlink/junction 别名。每个目标仓库只用一个 store。
 - 集成 checkout 始终处于配置的 `baseBranch`，干净且无进行中的 merge；外部 merge 后工作流会 fetch 并 fast-forward 本地 base。运行期间不要由其他工具同时改动它。
 - 仓库的 PR 合并方式应为 **merge commit**；squash/rebase 会改变批准 commit 的 SHA，工作流会报错而不是静默接受。
+- 创建 workflow 前先运行 [PR 契约初始化](#15-仓库-pr-契约初始化)：检查 label、PR template、branch protection 和 merge method；默认只做只读检查。
 - 检查图里的 agent prompts，补充目标项目的实际验证命令和限制。示例未固定 provider/model，使用 Host 配置；如需有序候选，按 [插件参考](<../../plugin-summary.md>) 设置 `config.models`。模型任务默认没有截止时间。
 - command/HTTP 默认 deny，先获得用户明确批准；agent 的工具权限另行配置，命令 allowlist 不会替 agent 建立文件系统沙箱。
 
@@ -37,12 +39,12 @@ gh auth status
 
 `integration/workflow-batch` 是 PR 的共享 base 分支；每个需求另有自己的 `auto/req-*` 分支，不从 base 之外复制。不要把受保护的 `main` 直接作为可写 base，除非你们明确允许。
 
-从固定 v1.0.1 的源码 checkout 或解压后的发行包取得上表五个文件。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
+从固定 v1.0.1 的源码 checkout 或解压后的发行包取得上表六个文件（含 `pr-protocol.md`）。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
 
 ```powershell
 $ExampleSource = 'C:/work/auto-workflow-release/docs/examples/development'
 New-Item -ItemType Directory -Force docs/examples/development | Out-Null
-Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/pr.mjs", "$ExampleSource/workflow.json" -Destination docs/examples/development
+Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/pr.mjs", "$ExampleSource/pr-protocol.md", "$ExampleSource/workflow.json" -Destination docs/examples/development
 # 检查脚本和提示词，补充项目验证要求后，仅本地提交这些文件
 git add -- docs/examples/development
 git commit -m "Add local development workflow"
@@ -52,6 +54,32 @@ git status --porcelain
 最后一条应无输出；确认脚本已进入基线提交、工作区干净，再开始业务执行。示例模块只依赖 Node.js 内置模块；项目自身的依赖、构建和验证仍需准备。
 
 command 节点执行的是固定命令，例如 `node docs/examples/development/driver.mjs prepare`，其 cwd 为**绑定的项目根目录**。不存在 `${input...}` shell 插值。agent 的 cwd 由小 envelope 指向各需求 worktree。run 创建后不可更换绑定项目。
+
+## 1.5 仓库 PR 契约初始化
+
+在创建/启动 workflow 前，先按 [PR 交流规范](<pr-protocol.md>) 检查目标仓库。默认只读，不改 branch protection 或 merge method：
+
+```powershell
+$env:DSH_WORKFLOW_INPUT = '{"repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch"}'
+node docs/examples/development/driver.mjs pr-init
+```
+
+检查项包括：
+
+- `gh` 认证和仓库权限；
+- 是否允许 merge commit；
+- branch protection 是否要求 PR、conversation resolution 和 required checks；
+- 是否存在 `workflow:merge-ready` 标签；
+- PR template 是否包含状态块。
+
+只创建标签和缺失的 PR template：
+
+```powershell
+$env:DSH_WORKFLOW_INPUT = '{"repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","apply":true}'
+node docs/examples/development/driver.mjs pr-init
+```
+
+`pr-init` **不会**自动修改 branch protection、required checks 或仓库 merge method；这些设置影响所有贡献者，必须由管理员确认后手动配置。检查未通过时，会话不能直接定义/启动 workflow。
 
 ## 2. 初始化数据并提交真实输入
 
@@ -263,6 +291,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | Stage | 额外输入 / 主要行为 |
 | --- | --- |
 | `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`selfMergeAfterMs`（默认 5 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
+| `pr-init` | 创建 workflow 前的 PR 契约检查；输入 `repoRoot`、`baseBranch`，`apply:true` 只创建 label 和缺失的 PR template，不改 branch protection/merge method。 |
 | `requirement` / `seed` | `dataRoot` 与 `requirement` / `seed` 对象；显式 intake。seed 可带 `origin`、`category`、`relatedRequirementId`；可选，不强制。 |
 | `claim` / `seed-batch` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；返回 ready items 或 idle。 |
 | `queue-check` | `dataRoot`、`maxPending`；返回 `mine` 或 `skip`，统计待实现（含 engineering）需求。 |

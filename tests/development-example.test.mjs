@@ -44,7 +44,7 @@ async function withPullRequestFixture(t, { root, repo }, { readyMerges = true } 
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   });
-  return { remote, state };
+  return { remote, state, fakeGh };
 }
 const user = (id, extra = {}) => ({ id, source: 'user', title: id, description: `Implement ${id}`, risk: 'high', ...extra });
 const mined = (id, value = 'mid', extra = {}) => ({ id, source: 'mined', seedId: `seed-${id.slice(4)}`, title: id, description: `Mined ${id}`, risk: value, ...extra });
@@ -210,7 +210,7 @@ test('CLI protocol is JSON-only and filesystem claim lock works across processes
 
 test('one requirement branch + one worktree + one PR survives review, external merge and cleanup', async t => {
   const base = await fixture(t, { integrationMode: 'pull-request' });
-  const { state: prState } = await withPullRequestFixture(t, base);
+  const { state: prState, fakeGh } = await withPullRequestFixture(t, base, { readyMerges: false });
   const { store, repo } = base;
   const item = await prepared(store, 'req-branch');
   assert.equal((await store.get(item.id)).branch, 'auto/req-branch');
@@ -226,9 +226,15 @@ test('one requirement branch + one worktree + one PR survives review, external m
   assert.match(brief.brief.markdown, /## Requirement/);
   assert.match(brief.brief.markdown, /req-branch/);
   await updateBody(store, brief);
-  const prFile = JSON.parse(await readFile(prState, 'utf8'));
+  let prFile = JSON.parse(await readFile(prState, 'utf8'));
   assert.match(prFile.prs[0].body, /Pinned commit reviewed/);
+  assert.match(prFile.prs[0].body, /^<!-- workflow/);
+  assert.match(prFile.prs[0].body, /stage=reviewing/);
   assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
+  prFile = JSON.parse(await readFile(prState, 'utf8'));
+  assert.match(prFile.prs[0].body, /stage=verifying/);
+  assert.equal((prFile.prs[0].labels ?? []).includes('workflow:merge-ready'), false);
+  await execute(process.execPath, [fakeGh, 'pr', 'merge', '1'], { cwd: base.repo, env: { ...process.env } });
   const merged = await check(store, item.id, item.claimId);
   assert.equal(merged.outcome, 'merged');
   assert.equal((await store.get(item.id)).integration.mechanism, 'external-pr');
@@ -249,12 +255,61 @@ test('after Human approval the workflow self-merges its PR when external merge d
   assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
   const waiting = await check(store, item.id, item.claimId);
   assert.equal(waiting.outcome, 'approval-needed');
+  const gated = JSON.parse(await readFile(path.join(base.root, 'fake-pr-state.json'), 'utf8'));
+  assert.match(gated.prs[0].body, /stage=merge-ready/);
+  assert.ok(gated.prs[0].labels.includes('workflow:merge-ready'));
   await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'approve', actor: 'test-human' });
   const merged = await selfMerge(store, item.id, item.claimId);
   assert.equal(merged.outcome, 'merged');
   assert.equal((await store.get(item.id)).integration.mechanism, 'self-merge');
   assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
   assert.equal(await git(repo, 'branch', '--list', 'auto/req-self'), '');
+});
+
+test('pr-init checks and safely creates the label and PR template', async t => {
+  const base = await fixture(t);
+  await withPullRequestFixture(t, base);
+  const before = await stage('pr-init', { repoRoot: base.repo, baseBranch: 'main' });
+  assert.equal(before.outcome, 'blocked');
+  assert.equal(before.output.checks.find(check => check.id === 'pr-template').ok, false);
+  const applied = await stage('pr-init', { repoRoot: base.repo, baseBranch: 'main', apply: true });
+  assert.equal(applied.outcome, 'complete');
+  const template = await readFile(path.join(base.repo, '.github', 'pull_request_template.md'), 'utf8');
+  assert.match(template, /^<!-- workflow/);
+  assert.match(template, /stage=implementing/);
+});
+
+test('PR protocol blocks merge-ready on failing CI or unresolved review threads', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request', selfMergeAfterMs: 0 });
+  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store } = base;
+  const item = await prepared(store, 'req-gate');
+  const artifact = await implement(store, item);
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  const fake = JSON.parse(await readFile(prState, 'utf8'));
+  fake.prs[0].checks = [{ conclusion: 'FAILURE' }];
+  fake.prs[0].threads = [{ isResolved: false }];
+  await writeFile(prState, JSON.stringify(fake));
+  assert.equal((await check(store, item.id, item.claimId)).outcome, 'waiting');
+  let gated = JSON.parse(await readFile(prState, 'utf8'));
+  assert.match(gated.prs[0].body, /stage=blocked/);
+  assert.equal((gated.prs[0].labels ?? []).includes('workflow:merge-ready'), false);
+  gated.prs[0].checks = [{ conclusion: 'SUCCESS' }];
+  gated.prs[0].threads = [{ isResolved: true }];
+  gated.prs[0].comments = [{ body: '[review]\nmissing role header' }];
+  await writeFile(prState, JSON.stringify(gated));
+  assert.equal((await check(store, item.id, item.claimId)).outcome, 'waiting');
+  assert.match(JSON.parse(await readFile(prState, 'utf8')).prs[0].body, /stage=blocked/);
+  gated = JSON.parse(await readFile(prState, 'utf8'));
+  gated.prs[0].comments = [{ body: `[role=reviewer] [task=req-gate] [head=${gated.prs[0].headRefOid}]\n[review]\npass` }];
+  await writeFile(prState, JSON.stringify(gated));
+  assert.equal((await check(store, item.id, item.claimId)).outcome, 'approval-needed');
+  gated = JSON.parse(await readFile(prState, 'utf8'));
+  assert.match(gated.prs[0].body, /stage=merge-ready/);
+  assert.ok(gated.prs[0].labels.includes('workflow:merge-ready'));
 });
 
 test('real worktree survives review feedback/rejection; implementation and reviews pin immutable revisions', async t => {

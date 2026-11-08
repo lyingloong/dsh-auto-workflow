@@ -1,5 +1,9 @@
 # 更新记录
 
+## 未发布
+
+- 新增开发示例 PR 契约：状态块、角色头、finding/thread、CI 与 `workflow:merge-ready` 标签；`pr-init` 在 workflow 创建前检查仓库，默认只读，`apply` 只创建标签和 PR template。
+
 ## v1.0.1 — 2026-11-08
 
 分支/worktree/PR 开发流、外部 merge 与 Human 批准后的 self-merge。
