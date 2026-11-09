@@ -1,8 +1,13 @@
 # 更新记录
 
-## 未发布
+## v1.1.0 — 2026-11-09
 
-- 新增开发示例 PR 契约：状态块、角色头、finding/thread、CI 与 `workflow:merge-ready` 标签；`pr-init` 在 workflow 创建前检查仓库，默认只读，`apply` 只创建标签和 PR template。
+开发示例的 PR 交流规范与初始化。
+
+- 新增 PR 契约：状态块、角色头、finding/thread、CI、merge 顺序与 `workflow:merge-ready` 标签。
+- 新增 `pr-init`：创建 workflow 前检查仓库；默认只读，`apply` 只创建标签和缺失的 PR template，不自动修改 branch protection 或 merge method。
+- head 变化、CI 失败、unresolved thread 或缺少角色头时撤销 merge-ready。
+- 项目名统一为 `dsh-auto-workflow`；新增项目页。
 
 ## v1.0.1 — 2026-11-08
 

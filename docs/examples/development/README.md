@@ -39,7 +39,7 @@ gh auth status
 
 `integration/workflow-batch` 是 PR 的共享 base 分支；每个需求另有自己的 `auto/req-*` 分支，不从 base 之外复制。不要把受保护的 `main` 直接作为可写 base，除非你们明确允许。
 
-从固定 v1.0.1 的源码 checkout 或解压后的发行包取得上表六个文件（含 `pr-protocol.md`）。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
+从固定 v1.1.0 的源码 checkout 或解压后的发行包取得上表六个文件（含 `pr-protocol.md`）。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
 
 ```powershell
 $ExampleSource = 'C:/work/auto-workflow-release/docs/examples/development'
