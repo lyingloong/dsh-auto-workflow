@@ -9,6 +9,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { createExecutors } from './executors.mjs';
 import { normalizeDefinition } from './definition.mjs';
@@ -464,6 +465,12 @@ export class WorkflowRunner {
           : candidate),
       });
       const entry = this.active.get(session);
+      // A finishing slice is not a reason to reject the edit: persisted state can
+      // report `active: false` while `scheduling` is still set, so a model edit
+      // right after the run parks failed with run_active on slower runners. Wait
+      // for a work-free slice to end; a genuinely busy run still rejects at once.
+      const idleDeadline = Date.now() + 2_000;
+      while (entry?.scheduling && !hasWork(entry.state) && Date.now() < idleDeadline) await delay(5);
       if (entry && (entry.scheduling || hasWork(entry.state))) throw failure('run_active', 'Packets are running or queued; pause/drain them before changing models.');
       const run = entry?.state ?? await store.latestRun();
       this.assertNoForeignOwner(session, run);
