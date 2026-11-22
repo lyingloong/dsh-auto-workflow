@@ -442,11 +442,14 @@ function templateBody() {
   ].join('\n');
 }
 
-export async function initPr(store, { apply = false } = {}) {
+export async function initPr(store, { apply = false, manualGate = false } = {}) {
   const repo = store.config.repoRoot;
   const base = store.config.baseBranch || 'main';
   const checks = [];
-  const add = (id, ok, detail) => checks.push({ id, ok: Boolean(ok), detail });
+  // `required` separates the workflow's hard contracts (auth, repo access,
+  // merge commits, its own label and template) from repository hardening that a
+  // manual merge gate can replace.
+  const add = (id, ok, detail, required = true) => checks.push({ id, ok: Boolean(ok), required, detail });
   let auth = false;
   try { await gh(repo, 'auth', 'status'); auth = true; } catch (error) { auth = false; }
   add('github-auth', auth, auth ? 'gh authentication available' : 'run gh auth login or set GH_TOKEN');
@@ -457,8 +460,10 @@ export async function initPr(store, { apply = false } = {}) {
   if (repoInfo) {
     add('repo-access', true, repoInfo.full_name);
     add('merge-commit', repoInfo.allow_merge_commit === true, `allow_merge_commit=${repoInfo.allow_merge_commit}`);
-    add('no-squash', repoInfo.allow_squash_merge === false, `allow_squash_merge=${repoInfo.allow_squash_merge}`);
-    add('no-rebase', repoInfo.allow_rebase_merge === false, `allow_rebase_merge=${repoInfo.allow_rebase_merge}`);
+    add('no-squash', repoInfo.allow_squash_merge === false, `allow_squash_merge=${repoInfo.allow_squash_merge}`, false);
+    add('no-rebase', repoInfo.allow_rebase_merge === false, `allow_rebase_merge=${repoInfo.allow_rebase_merge}`, false);
+  } else {
+    add('merge-commit', false, 'repository metadata unavailable');
   }
 
   let protection = null;
@@ -466,13 +471,17 @@ export async function initPr(store, { apply = false } = {}) {
     const { owner, name } = await repoCoordinates(store);
     protection = await ghJson(repo, ['api', `repos/${owner}/${name}/branches/${encodeURIComponent(base)}/protection`]);
   } catch (error) {
-    add('branch-protection', false, 'branch protection not readable; configure it manually');
+    protection = null;
   }
   if (protection) {
-    add('branch-protection', true, `protection on ${base}`);
-    add('required-conversation-resolution', protection.required_conversation_resolution?.enabled === true, 'required conversation resolution');
+    add('branch-protection', true, `protection on ${base}`, !manualGate);
+    add('required-conversation-resolution', protection.required_conversation_resolution?.enabled === true, 'required conversation resolution', !manualGate);
     const contexts = protection.required_status_checks?.contexts;
-    add('required-checks', Array.isArray(contexts) && contexts.length > 0, Array.isArray(contexts) && contexts.length ? `${contexts.length} required checks` : 'no required checks configured');
+    add('required-checks', Array.isArray(contexts) && contexts.length > 0, Array.isArray(contexts) && contexts.length ? `${contexts.length} required checks` : 'no required checks configured', !manualGate);
+  } else {
+    add('branch-protection', false, manualGate ? 'no branch protection; the manual merge gate covers it' : 'branch protection not readable; configure it manually', !manualGate);
+    add('required-conversation-resolution', false, 'branch protection not configured', !manualGate);
+    add('required-checks', false, 'branch protection not configured', !manualGate);
   }
 
   let label = false;
@@ -494,7 +503,7 @@ export async function initPr(store, { apply = false } = {}) {
       await gh(repo, 'label', 'create', MERGE_LABEL, '--color', '0E8A16', '--description', 'Verified by dsh-auto-workflow', '--force');
       const item = checks.find(check => check.id === 'merge-label');
       if (item) { item.ok = true; item.detail = `created ${MERGE_LABEL}`; }
-      add('apply-merge-label', true, `created ${MERGE_LABEL}`);
+      add('apply-merge-label', true, `created ${MERGE_LABEL}`, false);
     }
     if (!hasBlock) {
       const current = await readFile(templatePath, 'utf8').catch(() => null);
@@ -504,15 +513,15 @@ export async function initPr(store, { apply = false } = {}) {
         hasBlock = true;
         const item = checks.find(check => check.id === 'pr-template');
         if (item) { item.ok = true; item.detail = `created ${TEMPLATE_PATH}`; }
-        add('apply-pr-template', true, `created ${TEMPLATE_PATH}`);
+        add('apply-pr-template', true, `created ${TEMPLATE_PATH}`, false);
       } else {
-        add('apply-pr-template', false, `existing ${TEMPLATE_PATH} has no workflow block; leaving it untouched`);
+        add('apply-pr-template', false, `existing ${TEMPLATE_PATH} has no workflow block; leaving it untouched`, false);
       }
     }
   }
 
-  const required = ['github-auth', 'repo-access', 'merge-commit', 'branch-protection', 'required-conversation-resolution', 'merge-label', 'pr-template'];
-  return { ready: required.every(id => checks.some(check => check.id === id && check.ok)), checks, apply };
+  const warnings = checks.filter(check => !check.required && !check.ok);
+  return { ready: checks.filter(check => check.required).every(check => check.ok), manualGate, checks, warnings, apply };
 }
 
 export async function updateBody(store, item) {

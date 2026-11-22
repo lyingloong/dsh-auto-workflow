@@ -16,10 +16,11 @@
 - 同一方向在前一个需求 settle 后再次挖掘会创建 `req-<seed>-r<n>` 后缀需求，不会与已终止的 `req-<seed>` 冲突；首次仍使用稳定 id。
 - `queue-check` 的 backlog 改为「待实现需求 + 正在 mining 的 seed」，报告的 `headroom` 同时受水位与 store 的 `maxMiningSeeds` 限制；`seed-batch` 显式接收同一个 `maxPending`，只领剩余余额，14 个 baseline seed 不会在第一个需求出现前被领光。
 - 模型返回的 `reason` 只作诊断元数据：非字符串或超长值不会把有效的 `idle` 结果变成失败的 packet。
+- `pr-init` 新增 `manualGate`：把 branch protection、conversation resolution 与 required checks 降为警告（`required:false`），只保留 `gh` 认证、仓库访问、merge commit、`workflow:merge-ready` 标签和 PR template 作为硬性要求；每个检查现在带 `required` 字段，结果新增 `warnings`。（#26）
 - 中断后 `mining` 的 claim 不再无声卡死：`status` 报出过期 claim（`staleClaimMs` 默认 30 分钟），新增 `recover-seeds`（支持 `dryRun` 和 `olderThanMs`）显式释放，运行时不自动回收——年龄分不清「慢 miner」和「中断 miner」。
 - 新增 `retire-seed` / `rearm-seed`；`mining` 的 seed 必须先恢复再退役，已退役方向不会被需求 settle 复活，需求仍在进行中的方向也不能重新启用。
 - miner 提示词要求先查已有需求、分支和 PR；方向已被覆盖时返回 `proposal:null` 并给出 `reason`，理由落到 seed 的 `lastReason`。
-- 回归新增 11 项（轮转顺序、store 在挖上限与 headroom、显式恢复、在途水位、settle 回队、settle 后再挖、retire/rearm、版本拒绝等），全量 146 项通过。
+- 回归新增 12 项（轮转顺序、store 在挖上限与 headroom、显式恢复、在途水位、settle 回队、settle 后再挖、retire/rearm、版本拒绝、manual gate 等），全量 147 项通过。
 - 示例脚本是 materialize 到业务仓库的副本；升级插件后要重新 materialize 才会生效。
 
 ## v1.1.0 — 2026-11-09

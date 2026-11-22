@@ -59,6 +59,8 @@ if (args[0] === 'api' && /\/labels\/workflow%3Amerge-ready$/.test(args[1] ?? '')
   process.exit(0);
 }
 if (args[0] === 'api' && /\/protection$/.test(args[1] ?? '')) {
+  // Repositories that rely on a manual merge gate have no branch protection.
+  if (process.env.DSH_FAKE_NO_PROTECTION === '1') fail('Branch not protected');
   process.stdout.write(JSON.stringify({ required_conversation_resolution: { enabled: true }, required_status_checks: { contexts: ['test'] } }));
   process.exit(0);
 }

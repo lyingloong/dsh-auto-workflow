@@ -93,7 +93,7 @@ async function executeStage(name, input) {
     const repoRoot = input.dataRoot
       ? (await DevelopmentStore.open(absolute(input.dataRoot, 'dataRoot'))).config.repoRoot
       : absolute(input.repoRoot, 'repoRoot');
-    const initialized = await pullRequests.initPr({ config: { repoRoot, baseBranch } }, { apply: Boolean(input.apply) });
+    const initialized = await pullRequests.initPr({ config: { repoRoot, baseBranch } }, { apply: Boolean(input.apply), manualGate: Boolean(input.manualGate) });
     return result(initialized.ready ? 'complete' : 'blocked', initialized);
   }
   const store = await DevelopmentStore.fromRef(input.dataRef);

@@ -66,9 +66,9 @@ node docs/examples/development/driver.mjs pr-init
 
 检查项包括：
 
-- `gh` 认证和仓库权限；
-- 是否允许 merge commit；
-- branch protection 是否要求 PR、conversation resolution 和 required checks；
+- `gh` 认证和仓库权限（硬性）；
+- 是否允许 merge commit（硬性）；
+- branch protection 是否要求 PR、conversation resolution 和 required checks（默认硬性，`manualGate` 下为警告）；
 - 是否存在 `workflow:merge-ready` 标签；
 - PR template 是否包含状态块。
 
@@ -79,7 +79,20 @@ $env:DSH_WORKFLOW_INPUT = '{"repoRoot":"C:/work/project","baseBranch":"integrati
 node docs/examples/development/driver.mjs pr-init
 ```
 
-`pr-init` **不会**自动修改 branch protection、required checks 或仓库 merge method；这些设置影响所有贡献者，必须由管理员确认后手动配置。检查未通过时，会话不能直接定义/启动 workflow。
+`pr-init` **不会**自动修改 branch protection、required checks 或仓库 merge method；这些设置影响所有贡献者，必须由管理员确认后手动配置。默认模式检查未通过时，会话不能直接定义/启动 workflow。
+
+### 手动合并门禁（manual gate）
+
+有些仓库有意不用 branch protection，而是靠 PR + 人工 merge 作为门禁。这类仓库用 `manualGate:true`：
+
+```powershell
+$env:DSH_WORKFLOW_INPUT = '{"repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","apply":true,"manualGate":true}'
+node docs/examples/development/driver.mjs pr-init
+```
+
+该模式下 `branch-protection`、`required-conversation-resolution` 和 `required-checks` 降为警告（`required:false`，列在输出的 `warnings` 里），不再阻止启动。始终硬性要求的只有：`gh` 认证、仓库访问、允许 merge commit、`workflow:merge-ready` 标签和带状态块的 PR template。
+
+**merge commit 为什么不能降级**：工作流用 merge commit 把审查过的 commit 绑定进集成分支，合并后再验证该 commit 是 HEAD 的祖先。squash/rebase-only 仓库无法满足这个绑定，`manualGate` 也不放行——这种仓库需要改仓库设置或换集成方式。`no-squash` / `no-rebase` 仍只是建议项：它们影响所有贡献者，工作流不强制。
 
 ## 2. 初始化数据并提交真实输入
 
@@ -325,7 +338,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | Stage | 额外输入 / 主要行为 |
 | --- | --- |
 | `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`selfMergeAfterMs`（默认 5 分钟）、`maxMiningSeeds`（默认 3）、`staleClaimMs`（默认 30 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
-| `pr-init` | 创建 workflow 前的 PR 契约检查；输入 `repoRoot`、`baseBranch`，`apply:true` 只创建 label 和缺失的 PR template，不改 branch protection/merge method。 |
+| `pr-init` | 创建 workflow 前的 PR 契约检查；输入 `repoRoot`、`baseBranch`，`apply:true` 只创建 label 和缺失的 PR template，不改 branch protection/merge method；`manualGate:true` 把 branch protection 相关检查降为警告，认证/仓库访问/merge commit 仍是硬性要求。 |
 | `requirement` / `seed` | `dataRoot` 与 `requirement` / `seed` 对象；显式 intake。seed 可带 `origin`、`category`、`relatedRequirementId`；可选，不强制。 |
 | `claim` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；领需求，返回 ready items 或 idle。 |
 | `seed-batch` | `dataRoot`、可选 `maxPending` / `batchSize`；只领 `maxPending - 待实现 - 在挖` 的余额，并受 `maxMiningSeeds` 限制。 |

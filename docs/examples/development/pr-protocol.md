@@ -116,3 +116,12 @@ node docs/examples/development/driver.mjs pr-init
 ```
 
 默认只创建标签和缺失的 PR template；**不自动修改 branch protection 或仓库 merge method**。这两项会影响所有贡献者，必须由仓库管理员单独确认后手动配置。
+
+有意使用手动合并门禁的仓库（merge commits 开启、不做 branch protection）可以加 `manualGate:true`：
+
+```bash
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","apply":true,"manualGate":true}'
+node docs/examples/development/driver.mjs pr-init
+```
+
+此时 branch protection、conversation resolution 和 required checks 只是警告，不再阻止启动；`gh` 认证、仓库访问、允许 merge commit、`workflow:merge-ready` 标签和带状态块的 PR template 仍是硬性要求。merge commit 不能降级：工作流靠它把审查过的 commit 绑定进集成分支，squash/rebase-only 仓库无法满足。

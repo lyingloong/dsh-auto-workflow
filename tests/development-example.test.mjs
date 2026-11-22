@@ -413,6 +413,29 @@ test('retiring a direction whose requirement is still active keeps it retired', 
   assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-busy').status, 'queued');
 });
 
+test('pr-init manual gate treats branch protection as a warning, not a hard gate', async t => {
+  const base = await fixture(t);
+  await withPullRequestFixture(t, base);
+  process.env.DSH_FAKE_NO_PROTECTION = '1';
+  t.after(() => { delete process.env.DSH_FAKE_NO_PROTECTION; });
+  const strict = await stage('pr-init', { repoRoot: base.repo, baseBranch: 'main', apply: true });
+  assert.equal(strict.outcome, 'blocked');
+  const strictProtection = strict.output.checks.find(check => check.id === 'branch-protection');
+  assert.equal(strictProtection.required, true);
+  assert.equal(strictProtection.ok, false);
+  const manual = await stage('pr-init', { repoRoot: base.repo, baseBranch: 'main', apply: true, manualGate: true });
+  assert.equal(manual.outcome, 'complete');
+  assert.equal(manual.output.manualGate, true);
+  const protection = manual.output.checks.find(check => check.id === 'branch-protection');
+  assert.equal(protection.ok, false);
+  assert.equal(protection.required, false);
+  assert.deepEqual(manual.output.warnings.map(check => check.id).sort(), ['branch-protection', 'required-checks', 'required-conversation-resolution']);
+  // Auth, repo access and merge commits stay hard requirements in both modes.
+  const mergeCommit = manual.output.checks.find(check => check.id === 'merge-commit');
+  assert.equal(mergeCommit.required, true);
+  assert.equal(mergeCommit.ok, true);
+});
+
 test('a version 2 business store is rejected instead of reinterpreted in place', async t => {
   const { store } = await fixture(t);
   const legacy = path.join(store.root, '..', 'legacy-store');
