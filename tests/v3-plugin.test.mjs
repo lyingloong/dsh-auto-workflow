@@ -92,13 +92,13 @@ async function setup(t, { definition = AGENT, subagents = null } = {}) {
 function defaultSubagents() {
   const service = {
     calls: [],
-    async startActivation({ request }) {
-      service.calls.push(request);
+    async startActivation(spec) {
+      service.calls.push(spec);
       return {
         childId: `child-${service.calls.length}`,
         result: Promise.resolve({
           stopReason: 'completed',
-          output: [{ type: 'text', text: JSON.stringify({ outcome: 'ready', output: { seen: request.prompt?.[0]?.text?.length ?? 0 } }) }],
+          output: [{ type: 'text', text: JSON.stringify({ outcome: 'ready', output: { seen: spec.prompt?.[0]?.text?.length ?? 0 } }) }],
         }),
         dispose: async () => {},
       };

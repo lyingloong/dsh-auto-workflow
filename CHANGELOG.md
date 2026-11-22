@@ -1,5 +1,13 @@
 # 更新记录
 
+## 未发布
+
+修复 agent 节点在 DSH 0.2.2-rc.2 及之后无法启动的问题，并把最低 DSH 版本提升到该边界。
+
+- `ctx.subagents.startActivation` 现在把 `prompt`、`parent`、`cwd`、`agentOptions` 按宿主 `SubagentActivationSpec` 放在顶层。真实分界线是 **0.2.2-rc.2**：`@deepseek-ai/dsh-subagent` 0.2.1-rc.5 与 0.2.2-rc.1 读 `spec.request.*`，0.2.2-rc.2 起读 `spec.*`（安装包里的 `docs/upgrade-guide/v0.2.1-rc.2/subagent-activation-options` 目录名早于实际发布边界，只能说明形状变化，不能当版本号用）。旧形状会让宿主读到 `undefined` 的 `parent`，表现为 `all model candidates failed: … Cannot read properties of undefined (reading 'id')`（#23）。
+- **破坏性边界**：`engines.dsh` 由 `>=0.2.1-rc.5` 提升为 `>=0.2.2-rc.2`。已发布的 v1.0.0 / v1.0.1 / v1.1.0 在 0.2.2-rc.2+ 上会命中 #23；新代码也不能在 0.2.1-rc.5–0.2.2-rc.1 上启动 agent 节点。本机在 0.2.2-rc.5 上用真实模型冒烟验证过（单 agent 节点，返回 `{"ok":true}`）。
+- 新增 `tests/host-contract.test.mjs`：用按宿主方式读取 spec 的桩锁定顶层形状、`parent` 身份和“不配置模型”的情形，并守住 `engines.dsh` 不落回嵌套区间。
+
 ## v1.1.0 — 2026-11-09
 
 开发示例的 PR 交流规范与初始化。

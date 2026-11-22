@@ -66,8 +66,8 @@ test('plain command nodes still return raw stdout and status evidence', async t 
 
 function agentHarness({ calls, results }) {
   return {
-    async startActivation(request) {
-      calls.push({ options: request.request.agentOptions ?? null, label: request.label });
+    async startActivation(spec) {
+      calls.push({ options: spec.agentOptions ?? null, label: spec.label });
       const next = results.shift();
       if (!next) throw new Error('unexpected activation');
       if (next.reject) return { childId: `child-${calls.length}`, result: Promise.reject(new Error(next.reject)), dispose: async () => {} };

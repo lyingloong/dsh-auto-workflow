@@ -8,7 +8,7 @@
 
 ## 安装
 
-要求 Node.js **22.5+**、DeepSeek Harness **0.2.1-rc.5+**（首发已验证 rc.5）；开发示例还需要 Git 和可用的模型工具环境。以下使用 `desktop` profile，请按实际配置替换。
+要求 Node.js **22.5+**、DeepSeek Harness **0.2.2-rc.2+**（本机在 0.2.2-rc.5 验证）。0.2.2-rc.1 及更早读的是已移除的嵌套 `request` spec，agent 节点无法启动；开发示例还需要 Git 和可用的模型工具环境。以下使用 `desktop` profile，请按实际配置替换。
 
 推荐固定 release，避免随开发分支变化：
 

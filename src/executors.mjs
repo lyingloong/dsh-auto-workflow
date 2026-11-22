@@ -45,15 +45,18 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
             const model = { provider: options?.provider ?? null, model: options?.model ?? null };
             // Startup receives the same deadline/cancellation signal. Drain its
             // admission before leaving, so a late handle cannot be orphaned.
+            //
+            // The host's SubagentActivationSpec carries the task fields at the
+            // top level since DSH 0.2.2-rc.2; earlier hosts read the removed
+            // nested `request` object. `label`/`signal` stay after the spread
+            // so they take precedence.
             activation = await subagents.startActivation({
               provider: settings.subagentProvider ?? 'spawn',
+              prompt: [{ type: 'text', text: prompt }],
+              parent: exec.agent,
+              cwd: agentCwd,
+              ...(options ? { agentOptions: options } : {}),
               label: `workflow:${node.id}`,
-              request: {
-                prompt: [{ type: 'text', text: prompt }],
-                parent: exec.agent,
-                cwd: agentCwd,
-                ...(options ? { agentOptions: options } : {}),
-              },
               signal: scope.signal,
               delivery: 'caller',
             });

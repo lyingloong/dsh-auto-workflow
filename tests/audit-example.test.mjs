@@ -84,11 +84,11 @@ async function graphFixture(t, reply) {
   }, input: { dataRoot: fixtureValue.store.root } }, io);
   const calls = [];
   const executors = createExecutors({ cwd: fixtureValue.repo, exec: {}, ctx: { get: name => name === 'subagents' ? {
-    startActivation: async request => {
-      const prompt = request.request.prompt[0].text;
-      const nodeId = request.label.slice('workflow:'.length);
+    startActivation: async spec => {
+      const prompt = spec.prompt[0].text;
+      const nodeId = spec.label.slice('workflow:'.length);
       const input = JSON.parse(prompt.split('Input:\n')[1].split('\n\nContext:\n')[0]);
-      calls.push({ nodeId, input, cwd: request.request.cwd });
+      calls.push({ nodeId, input, cwd: spec.cwd });
       const answer = await reply({ nodeId, input, fixture: fixtureValue, calls });
       return { childId: `audit-child-${calls.length}`, result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(answer) }] }), dispose: async () => {} };
     },
@@ -310,8 +310,8 @@ test('audit regression: uncertain snapshot reconciles explicitly then resumes th
   const raw = JSON.parse(await readFile(path.join(example, 'workflow.json'), 'utf8')); raw.entry = 'review-input';
   const io = memoryIO();
   const state = await newRunState({ definition: normalizeDefinition(raw), cwd: repo, permissions: { command: { mode: 'allowlist', allow: ['node docs/examples/development/driver.mjs'] } }, input: recovered.output }, io);
-  const executors = createExecutors({ cwd: repo, exec: {}, ctx: { get: () => ({ startActivation: async request => {
-    assert.equal(request.label, 'workflow:reviewer', 'recovery must not rerun engineering');
+  const executors = createExecutors({ cwd: repo, exec: {}, ctx: { get: () => ({ startActivation: async spec => {
+    assert.equal(spec.label, 'workflow:reviewer', 'recovery must not rerun engineering');
     return { childId: 'audit-recovered-review', result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(reviewReply('pass')) }] }), dispose: async () => {} };
   } }) } });
   await run(state, executors, { io, maxSteps: 50 });
