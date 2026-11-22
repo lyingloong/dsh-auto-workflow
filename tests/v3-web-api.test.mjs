@@ -137,7 +137,7 @@ test('state, catalog, model edits, decisions and lazy refs work over the private
     body: JSON.stringify({ session, nodeId: 'work', models: [{ provider: 'p', model: 'b', reasoningEffort: 'low' }] }),
   });
   const editedBody = await edited.json();
-  assert.equal(edited.status, 200);
+  assert.equal(edited.status, 200, JSON.stringify(editedBody));
   assert.deepEqual(editedBody.definition.nodes[0].config.models, [{ provider: 'p', model: 'b', reasoningEffort: 'low' }]);
   assert.deepEqual(editedBody.models.providers[0].models[0].reasoningEfforts, [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High' }]);
 
