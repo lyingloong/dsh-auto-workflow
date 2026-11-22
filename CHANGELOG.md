@@ -8,6 +8,20 @@
 - **破坏性边界**：`engines.dsh` 由 `>=0.2.1-rc.5` 提升为 `>=0.2.2-rc.2`。已发布的 v1.0.0 / v1.0.1 / v1.1.0 在 0.2.2-rc.2+ 上会命中 #23；新代码也不能在 0.2.1-rc.5–0.2.2-rc.1 上启动 agent 节点。本机在 0.2.2-rc.5 上用真实模型冒烟验证过（单 agent 节点，返回 `{"ok":true}`）。
 - 新增 `tests/host-contract.test.mjs`：用按宿主方式读取 spec 的桩锁定顶层形状、`parent` 身份和“不配置模型”的情形，并守住 `engines.dsh` 不落回嵌套区间。
 
+### 示例：seed 轮转、在途水位与显式恢复
+
+开发示例的业务存储升到 `version: 3`；版本 2 的旧库会被拒绝，需要新的 dataRoot（#24、#25、#27）。
+
+- seed 状态收敛为 `queued` / `mining` / `proposed` / `retired`，公平性改为轮转位置 `rotationRound`：从未挖过的优先，其次最久未挖；`proposal:null` 保留原轮次（按最久未挖重排），需求 `merged`/`rejected` 则取新位置排到队尾。既不会像旧 `idle` 那样永久停止，也不使用时间冷却。
+- 同一方向在前一个需求 settle 后再次挖掘会创建 `req-<seed>-r<n>` 后缀需求，不会与已终止的 `req-<seed>` 冲突；首次仍使用稳定 id。
+- `queue-check` 的 backlog 改为「待实现需求 + 正在 mining 的 seed」，报告的 `headroom` 同时受水位与 store 的 `maxMiningSeeds` 限制；`seed-batch` 显式接收同一个 `maxPending`，只领剩余余额，14 个 baseline seed 不会在第一个需求出现前被领光。
+- 模型返回的 `reason` 只作诊断元数据：非字符串或超长值不会把有效的 `idle` 结果变成失败的 packet。
+- 中断后 `mining` 的 claim 不再无声卡死：`status` 报出过期 claim（`staleClaimMs` 默认 30 分钟），新增 `recover-seeds`（支持 `dryRun` 和 `olderThanMs`）显式释放，运行时不自动回收——年龄分不清「慢 miner」和「中断 miner」。
+- 新增 `retire-seed` / `rearm-seed`；`mining` 的 seed 必须先恢复再退役，已退役方向不会被需求 settle 复活，需求仍在进行中的方向也不能重新启用。
+- miner 提示词要求先查已有需求、分支和 PR；方向已被覆盖时返回 `proposal:null` 并给出 `reason`，理由落到 seed 的 `lastReason`。
+- 回归新增 11 项（轮转顺序、store 在挖上限与 headroom、显式恢复、在途水位、settle 回队、settle 后再挖、retire/rearm、版本拒绝等），全量 146 项通过。
+- 示例脚本是 materialize 到业务仓库的副本；升级插件后要重新 materialize 才会生效。
+
 ## v1.1.0 — 2026-11-09
 
 开发示例的 PR 交流规范与初始化。

@@ -90,7 +90,7 @@ $env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot
 node docs/examples/development/driver.mjs init
 ```
 
-配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR；review pass 后 PR 标记 ready，外部 Codex/你可以直接 merge，不必先经过工作流内部 Human。宽限期 `selfMergeAfterMs` 内没有外部 merge 时，`check-pr` 才进入 `self-merge-human`；Human 同意后才由工作流用 **merge commit** merge 自己的 PR，再验证/清理。`selfMergeAfterMs` 默认 `300000`（5 分钟），设为 `0` 表示 ready 后立即请求 self-merge 审批。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback；不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 仍是 `version: 2`，不等于包版本；旧 detached worktree 数据被拒绝，不迁移或重置。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。
+配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR；review pass 后 PR 标记 ready，外部 Codex/你可以直接 merge，不必先经过工作流内部 Human。宽限期 `selfMergeAfterMs` 内没有外部 merge 时，`check-pr` 才进入 `self-merge-human`；Human 同意后才由工作流用 **merge commit** merge 自己的 PR，再验证/清理。`selfMergeAfterMs` 默认 `300000`（5 分钟），设为 `0` 表示 ready 后立即请求 self-merge 审批。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback；不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 为 `version: 3`（seed 轮转与 claim 恢复），不等于包版本；版本 2 的旧库会被拒绝，同目录不迁移、不重置，换用新的 dataRoot 并保留旧数据供检查。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。`maxMiningSeeds`（默认 `3`）是在挖 seed 的 store 级硬上限；`staleClaimMs`（默认 `1800000`）既是 `status` 报告过期 claim 的阈值，也是 `recover-seeds` 的默认门槛，运行时不自动回收。
 
 ### 用户 intake
 
@@ -120,9 +120,42 @@ $env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","seed":{"
 node docs/examples/development/driver.mjs seed
 ```
 
-miner 只消费这些实际 seed，读取项目后提出一个具体需求，priority 为 `1..9`。`seed-edge-case` 对应稳定需求 `req-edge-case`；与无关已有需求冲突时失败而非覆盖。没有可行动建议时返回 `proposal:null`，该 seed 记为 idle，不反复调用模型或制造假需求。
+miner 只消费这些实际 seed，读取项目后提出一个具体需求，priority 为 `1..9`。`seed-edge-case` 第一次产出的需求是 `req-edge-case`；同一方向在前一个需求 settle 后再次产出时，用 `req-edge-case-r2` 这类后缀，避免覆盖已终止的需求。没有可行动建议时返回 `{"proposal":null,"reason":"…"}`，该 seed 回到轮转队列并记下 `lastOutcome`/`lastReason`，不制造假需求。
 
 **没有 GitHub Issue 自动抓取、外部发现 feed 或全聊天监听。** 后续 seed/用户需求仍由授权调用者显式提供。seed 可携带 `relatedRequirementId`，帮助 miner 避开对同一需求的重复提案。
+
+#### seed 轮转、在途上限与恢复
+
+seed 只有四种状态：`queued`、`mining`、`proposed`、`retired`。公平性来自轮转位置 `rotationRound`，**不使用时间冷却**：
+
+- 领取顺序是「从未挖过的 seed 优先，其次 `rotationRound` 最小者」，同一批共享一个 round；14 个 baseline seed 会按轮次铺开，既不用时间冷却，也不会像旧设计那样永久 `idle`。
+- `proposal:null` 的 seed 回到 `queued`，保留被领取时的轮次：按「最久未挖优先」排序，它要等其他方向各轮过一遍才会再次轮到。需求 `merged`/`rejected` 后，它的 seed 同样回到 `queued`，但取**新的**轮转位置（距离上次挖掘可能已过去很久），因此排到队尾。
+- `mining` 的 seed 计入 backlog 水位，`seed-batch` 只领 `maxPending - backlog` 的余额，store 再按 `maxMiningSeeds` 兜底，避免在第一个需求出现前领光整个 seed 池。
+- `retired` 的 seed 永不领取；需要恢复时显式 `rearm-seed`，它会以新的轮转位置入队。运行时的 seed 写入只经 `driver`（`proposeSeed`/`claimSeeds` 以及操作者的 `recover-seeds`/`retire-seed`/`rearm-seed`，加上需求 settle 时的回队），miner 不能自己改 seed。
+
+中断恢复是**显式操作**，运行时不自动回收：
+
+```powershell
+# 只读：查看 queued/mining/proposed/retired 计数与过期 claim（age >= staleClaimMs）
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data"}'
+node docs/examples/development/driver.mjs status
+
+# 先把过期 claim 挂起（不写盘），确认后再释放
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","olderThanMs":1800000,"dryRun":true}'
+node docs/examples/development/driver.mjs recover-seeds
+```
+
+`recover-seeds` 只释放 `claimAge >= olderThanMs` 的 `mining` seed：退回 `queued`、`attempts` 保留、写入 `lastOutcome:"recovered-stale-claim"`。年龄无法区分「慢 miner」和「中断 miner」，所以**运行时永不自动回收**；先 `status` 核对，再决定是否释放。
+
+```powershell
+# 让一个方向永久退役 / 重新启用
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","seedId":"seed-baseline-docs","reason":"docs 已稳定"}'
+node docs/examples/development/driver.mjs retire-seed
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","seedId":"seed-baseline-docs"}'
+node docs/examples/development/driver.mjs rearm-seed
+```
+
+`mining` 的 seed 不能直接 retire，必须先 `recover-seeds`；`rearm-seed` 也会拒绝需求仍在进行中的方向（先结束或拒绝该需求）。`retire-seed` 只接受 `reason`。
 
 ## 3. 定义、运行并只启动一个 producer
 
@@ -162,14 +195,14 @@ miner 只消费这些实际 seed，读取项目后提出一个具体需求，pri
 
 ```text
 mine-gate → queue-check
-             ├─ 待实现 ≤ 3 → seed-batch → seed-fanout(detached → miner)
-             │                         → producer-dispatch → producer-work(detached → route)
-             └─ 待实现 > 3 → producer-dispatch
+             ├─ backlog < 3 → seed-batch → seed-fanout(detached → miner)
+             │                          → producer-dispatch → producer-work(detached → route)
+             └─ backlog ≥ 3 → producer-dispatch
                             → producer-work(detached → route)
              → mine-gate
 ```
 
-`queue-check` 统计 queued、intake、需求审批、ready、preparing、engineering-ready 和 engineering；待实现超过工程师并发数 3 时暂停新挖掘，只处理已有队列。无 seed 时跳过模型，但仍检查需求队列。miner 晚于本轮 dispatch 完成，其新需求可在下一轮领取。Human 等待与慢 worker 不牵住 detached producer。**每次按 Run 不要重复 enqueue producer。**
+`queue-check` 统计 queued、intake、需求审批、ready、preparing、engineering-ready 和 engineering，**再加上正在 mining 的 seed**：`backlog = 待实现需求 + 在挖 seed`，达到 `maxPending`（图里 3）就暂停新挖掘，只处理已有队列。`seed-batch` 每轮最多领 `maxPending - backlog` 个（图里 `batchSize` 也是 3），store 再用 `maxMiningSeeds` 兜底，所以 14 个 baseline seed 不会在第一个需求出现前被领光。无 seed 时跳过模型，但仍检查需求队列。miner 晚于本轮 dispatch 完成，其新需求可在下一轮领取。Human 等待与慢 worker 不牵住 detached producer。**每次按 Run 不要重复 enqueue producer。**
 
 新增用户需求后，如需立即准入，可 enqueue `nodeId:"dispatch"`、`input:{"dataRoot":"C:/work/project-workflow-data"}`；否则现有 producer 在后续周期领取。有限 dispatch 不会产生新的持续 producer。
 
@@ -252,6 +285,7 @@ node docs/examples/development/driver.mjs cleanup
 - `auto_workflow_control` 使用 `nodeId` + `enabled` 控制单个队列。禁用 `mine-gate` 停后续周期；如需阻止未启动的挖掘，还应禁用 `miner`。禁用 engineer/reviewer 不影响其他节点，已运行工作继续排空。
 - `continuous:false` 全局停新准入并排空在途工作；`stop:true` 是显式中断。任何控制都不自动 cleanup。
 - Host 停止/重载、中断或失败不会自动重放；先检查仓库和业务存储，再决定显式续接或新 run。状态引用落盘不承诺跨文件/Git 的掉电事务，详见 [生命周期](<../../run-lifecycle.md>)。
+- 挖掘中断留下的 `mining` seed 不会自动释放：`driver status` 的 `seeds.stale` 列出达到 `staleClaimMs` 的 claim，核对后用 `driver recover-seeds`（先 `dryRun`）退回 `queued`。
 
 ### Typed busy 只重试尚未开始的操作
 
@@ -290,12 +324,15 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 
 | Stage | 额外输入 / 主要行为 |
 | --- | --- |
-| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`selfMergeAfterMs`（默认 5 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
+| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`selfMergeAfterMs`（默认 5 分钟）、`maxMiningSeeds`（默认 3）、`staleClaimMs`（默认 30 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
 | `pr-init` | 创建 workflow 前的 PR 契约检查；输入 `repoRoot`、`baseBranch`，`apply:true` 只创建 label 和缺失的 PR template，不改 branch protection/merge method。 |
 | `requirement` / `seed` | `dataRoot` 与 `requirement` / `seed` 对象；显式 intake。seed 可带 `origin`、`category`、`relatedRequirementId`；可选，不强制。 |
-| `claim` / `seed-batch` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；返回 ready items 或 idle。 |
-| `queue-check` | `dataRoot`、`maxPending`；返回 `mine` 或 `skip`，统计待实现（含 engineering）需求。 |
-| `record-proposal` | seed envelope、`proposal` 或 `null`；稳定 ID 需求或 idle seed。 |
+| `claim` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；领需求，返回 ready items 或 idle。 |
+| `seed-batch` | `dataRoot`、可选 `maxPending` / `batchSize`；只领 `maxPending - 待实现 - 在挖` 的余额，并受 `maxMiningSeeds` 限制。 |
+| `queue-check` | `dataRoot`、`maxPending`；返回 `mine` 或 `skip`，`backlog = 待实现（含 engineering）+ 在挖 seed`，`headroom` 取 backlog 与 `maxMiningSeeds` 两处剩余量的较小值，并报告过期 claim 与 `reason`（`backlog-full` / `mining-cap`）。 |
+| `recover-seeds` | `dataRoot`、可选 `olderThanMs`（默认 `staleClaimMs`）、`dryRun`；只释放过期的 `mining` claim，运行时不会自动回收。 |
+| `retire-seed` / `rearm-seed` | `dataRoot`、`seedId`；退役必须带 `reason`，`mining` 状态不能直接退役；需求仍在进行中的方向不能重新启用；重新启用会在轮转末尾入队。 |
+| `record-proposal` | seed envelope、`proposal` 或 `null`、可选 `reason`；稳定 ID 需求，或把 seed 放回轮转并记录 `lastOutcome`/`lastReason`。 |
 | `route` | claimed item；ready 或 needs_approval。 |
 | `requirement-decision` | 冻结 `expectedRevision`、`decision`，reject 必须 note；revision 绑定决定。 |
 | `revise-proposal` | `proposal` 含 `expectedRevision`、title、description、risk；同 ID revision+1。 |

@@ -13,7 +13,7 @@ npm run verify:release
 npm pack --dry-run --json --ignore-scripts
 ```
 
-- Windows / Node.js 24.12.0 的最后一轮功能回归为 **135 项通过、0 失败、0 跳过**，包含核心、执行器、宿主 `startActivation` 契约、宿主集成、Web API、看板、分支/PR 示例及独立审计回归。
+- Windows / Node.js 24.12.0 的最后一轮功能回归为 **146 项通过、0 失败、0 跳过**，包含核心、执行器、宿主 `startActivation` 契约、宿主集成、Web API、看板、分支/PR 示例、seed 轮转与恢复及独立审计回归。
 - `test:runner` 与默认入口使用同一组测试；`test:watch` 使用明确文件入口，不把测试目录当作模块运行。
 - `verify:release` 检查包名、版本、exports、必要文件、包内 Markdown 链接、私有信息泄露以及唯一示例的 3+3/root6 配置。它只读文件，不执行模型或业务命令。
 - CI 保留仓库原有 Ubuntu / Windows × Node.js 24.x 矩阵。**矩阵配置不是通过声明**：具体提交的完成状态以 [GitHub Actions](https://github.com/lyingloong/dsh-auto-workflow/actions/workflows/test.yml) 为准。Node.js 22.5 是声明的最低版本，本次未单独实跑该下限；也未对 macOS 作完整运行验收。
@@ -41,7 +41,7 @@ npm pack --dry-run --json --ignore-scripts
 
 实跑覆盖了**用户需求分派、工程/审查池、Human 返修/批准、本地集成与保留**，不代表每个图分支都调用了真实模型。挖掘/风险审批、busy 重排、真实 Git 冲突恢复和故障注入由实际 CLI/Git 加确定性模型桩验证。当前未发布的分支/draft PR 模型使用本地 bare remote 与 test-only fake `gh` 回归，**没有对真实 GitHub 执行 push/开 PR/外部 merge 验收**；真实运行前必须由用户配置 `gh` token 并在目标仓库验证。
 
-2026-11-22 补充：DSH **0.2.2-rc.2** 起 `SubagentActivationSpec` 改为顶层 `prompt`/`parent`/`cwd`/`agentOptions`，插件已随之修正，`engines.dsh` 提升为 `>=0.2.2-rc.2`。当日在本机 0.2.2-rc.5 上用真实模型跑过单 agent 节点冒烟（packet `completed`、outcome `complete`、输出 `{"ok":true}`），完整开发示例尚未在 0.2.2 线重跑。
+2026-11-22 补充：DSH **0.2.2-rc.2** 起 `SubagentActivationSpec` 改为顶层 `prompt`/`parent`/`cwd`/`agentOptions`，插件已随之修正，`engines.dsh` 提升为 `>=0.2.2-rc.2`。当日在本机 0.2.2-rc.5 上用真实模型跑过单 agent 节点冒烟（packet `completed`、outcome `complete`、输出 `{"ok":true}`），完整开发示例尚未在 0.2.2 线重跑。同轮把示例业务存储升级到 `version: 3`（seed 轮转、在途水位、显式 claim 恢复）；旧库被拒绝，需要新的 dataRoot。
 
 首发时节点队列仍为限高列表，并曾用真实浏览器验证内部滚动、键盘 PageDown、刷新后保留位置和 Human 卡片不被挤出视口。当前未发布看板已改为每节点彩色方块网格，保留网格内部滚动；该项 UI 改动由脚本回归覆盖，未改动审批策略。
 

@@ -89,7 +89,7 @@ flowchart TD
 - command/HTTP 权限默认 deny。命令 allowlist 不是文件系统沙箱，也不替代 agent 工具权限。
 - 暂停和禁用节点不会取消在途工作；Stop 不等于回滚。失败或中断后先检查副作用，再显式恢复或新建 run。
 - 单 Host、本地文件锁；不是分布式队列、外部审批服务或 exactly-once Git/HTTP 事务。工作流会 push 自己的需求分支并创建/更新 PR，但不会 merge 远端、不会自行批准 GitHub PR，也不会部署。
-- 包版本 `1.1.0`、定义 `apiVersion: 2`、运行状态 `version: 3`、示例业务存储 `version: 2` 是不同层的版本号，不要求相同。废弃开发序列与迁移边界见 [更新记录](<CHANGELOG.md>)。
+- 包版本 `1.1.0`、定义 `apiVersion: 2`、运行状态 `version: 3`、示例业务存储 `version: 3` 是不同层的版本号，不要求相同。废弃开发序列与迁移边界见 [更新记录](<CHANGELOG.md>)。
 
 已验证范围、真实模型执行概况与限制集中在 [验证说明](<docs/verification.md>)。从源码 checkout 运行完整回归：
 

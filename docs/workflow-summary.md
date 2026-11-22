@@ -34,8 +34,8 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 ## 输入来源与持续 producer
 
 - **用户需求**只由获得授权的 intake 调用写入。优先级强制为 `0`，即使风险为 high 也跳过“需求是否开展”的审批；仍必须通过实现 review 与 Human merge 门禁。
-- **挖掘需求**来自事先提供的真实证据 seed，优先级为 `1..9`。low 跳过需求审批，mid/high 必须人工决定。没有 seed 就不调用挖掘模型；无可行动建议的 seed 记为 idle，不凭空制造需求。初始化会写入一组可选的 baseline discovery seeds（docs、refactor、page、chore、tests、dependency 等），它们只是发现方向，不是证据；miner 找不到具体问题仍应返回 idle。
-- 默认 `dispatch` 只准入有限批次。要持续处理，在同一 run 中显式向 `mine-gate` enqueue **一个** producer。它每轮经 60 秒 gate、backlog 水位检查、seed claim、detached miner packet、队列 dispatch、detached 需求 packet 后返回 gate。仅当待实现需求（含 engineering）不超过工程师并发数 3 时才进入挖掘；backlog 更深时只 dispatch 已有队列。
+- **挖掘需求**来自事先提供的真实证据 seed，优先级为 `1..9`。low 跳过需求审批，mid/high 必须人工决定。没有 seed 就不调用挖掘模型；无可行动建议的 seed 回到轮转队列并记下原因，不凭空制造需求，也不会被永久挂起。初始化会写入一组可选的 baseline discovery seeds（docs、refactor、page、chore、tests、dependency 等），它们只是发现方向，不是证据；miner 找不到具体问题仍应返回 idle。seed 的公平性按轮转位置 `rotationRound` 排序（从未挖过的优先，其次最久未挖），不使用时间冷却；`proposal:null` 保留原轮次，需求 merged/rejected 后其 seed 以新的轮转位置重新入队。同一方向的重复提案在前一个需求 settle 后使用 `req-<seed>-r<n>` 后缀，不会覆盖已终止的需求。
+- 默认 `dispatch` 只准入有限批次。要持续处理，在同一 run 中显式向 `mine-gate` enqueue **一个** producer。它每轮经 60 秒 gate、backlog 水位检查、seed claim、detached miner packet、队列 dispatch、detached 需求 packet 后返回 gate。`backlog = 待实现需求（含 engineering）+ 正在 mining 的 seed`，达到工程师并发数 3 即只 dispatch 已有队列；`seed-batch` 只领剩余余额并受 `maxMiningSeeds` 限制。中断后留在 `mining` 的 claim 由 `driver status` 报出，只能显式 `recover-seeds` 释放，运行时不自动回收。
 - 慢模型和 Human 等待不会牵住 detached producer。后续 seed 与用户需求可以继续写入；需要即时处理时可 enqueue 有限 `dispatch`，不要重复启动 producer。
 - 优先级作用于业务队列的 claim；不抢占已经领取/执行的工作，也不承诺重排引擎中已经排队的 token。
 
@@ -55,7 +55,7 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 
 有效的审查返修使用业务 outcome **`revise`**，先落盘再进入下一轮，不借用通用失败预算的 `needs_revision`。示例没有自动业务返修次数上限；操作者可暂停节点。失败、取消或无效模型输出也不能冒充一次通过的 review。
 
-示例业务存储为 `version: 2`，与包 SemVer 无关。旧 store 不迁移、不删除；使用新的 canonical root 并保留旧数据供检查。
+示例业务存储为 `version: 3`（seed 轮转与 claim 恢复），与包 SemVer 无关。版本 2 的旧库会被拒绝，不迁移、不删除；使用新的 canonical root 并保留旧数据供检查。
 
 ## 人工批准、PR 发布和保留
 

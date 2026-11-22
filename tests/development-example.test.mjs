@@ -165,27 +165,262 @@ test('driver init seeds the baseline discovery directions exactly once', async t
   const result = await cli('init', { dataRoot, repoRoot: repo });
   assert.equal(result.outcome, 'complete');
   assert.equal(result.output.baselineSeeds, 14);
+  assert.equal(result.output.version, 3);
+  assert.equal(result.output.maxMiningSeeds, 3);
   const store = await DevelopmentStore.open(dataRoot);
-  const seeds = await store.claimSeeds(100);
+  const seeds = await store.claimSeeds(100, { maxMining: 100 });
   assert.equal(seeds.length, 14);
   assert.ok(seeds.every(seed => seed.origin === 'baseline' && seed.seedId.startsWith('seed-baseline-')));
+  assert.ok(seeds.every(seed => seed.rotationRound === 1 && seed.claimId));
+  // Every direction is mining now, so one batch cannot claim the same seed twice.
+  assert.deepEqual(await store.claimSeeds(100, { maxMining: 100 }), []);
 });
 
-test('seed ids differ from requirement ids; explicit no-proposal idle and safe data refs', async t => {
+test('seed ids differ from requirement ids; no-proposal returns the seed to the rotation', async t => {
   const { store } = await fixture(t);
   await store.upsertSeed({ id: 'seed-one', title: 'Useful evidence', evidence: 'Local source evidence' });
   await store.upsertSeed({ id: 'seed-empty', title: 'Not actionable', evidence: 'Needs more evidence' });
   const seeds = await store.claimSeeds(3);
   const proposed = await store.proposeSeed({ seedId: seeds[0].seedId, claimId: seeds[0].claimId, proposal: { title: 'Concrete fix', description: 'Concrete expected behavior', risk: 'low', priority: 2 } });
   assert.equal(proposed.id, 'req-one'); assert.equal(proposed.seedId, 'seed-one'); assert.notEqual(proposed.id, proposed.seedId);
-  assert.equal(await store.proposeSeed({ seedId: seeds[1].seedId, claimId: seeds[1].claimId, proposal: null }), null);
+  assert.equal(await store.proposeSeed({ seedId: seeds[1].seedId, claimId: seeds[1].claimId, proposal: null, reason: 'already covered by req-one' }), null);
   assert.equal((await store.list()).length, 1);
-  assert.deepEqual(await store.claimSeeds(3), []);
+  const idle = (await store.readSeeds()).find(seed => seed.id === 'seed-empty');
+  assert.equal(idle.status, 'queued');
+  assert.equal(idle.claimId, null);
+  assert.equal(idle.attempts, 1);
+  assert.equal(idle.lastOutcome, 'no-proposal');
+  assert.equal(idle.lastReason, 'already covered by req-one');
+  // A no-proposal direction is retried in a later round, never one-shot.
+  const reclaimed = await store.claimSeeds(1);
+  assert.deepEqual(reclaimed.map(seed => seed.seedId), ['seed-empty']);
+  assert.equal(reclaimed[0].rotationRound, 2);
+  assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-empty').attempts, 2);
   await assert.rejects(store.proposeSeed({ seedId: seeds[0].seedId, claimId: seeds[0].claimId, proposal: null }), /Stale/);
   for (const id of ['../outside', 'req-../../oops', 'req-a/b', 'req-a.json', 'req-a:stream', 'req-UPPER']) assert.throws(() => store.ref(id), /Unsafe/);
   await assert.rejects(DevelopmentStore.fromRef(path.join(store.root, 'config.json')));
   await assert.rejects(DevelopmentStore.fromRef(path.join(store.root, 'requirements', 'req-one.json.extra')));
   await assert.rejects(DevelopmentStore.create({ dataRoot: path.join(store.root, 'other'), repoRoot: store.config.repoRoot, baseBranch: 'main..evil' }), /Unsafe/);
+});
+
+test('seed claims rotate: never-mined directions first, then the least recently mined', async t => {
+  const { store } = await fixture(t);
+  for (const id of ['seed-a', 'seed-b', 'seed-c']) await store.upsertSeed({ id, title: `Direction ${id}`, evidence: `${id} evidence` });
+  const first = await store.claimSeeds(1, { maxMining: 100 });
+  assert.deepEqual(first.map(seed => seed.seedId), ['seed-a']);
+  assert.equal(first[0].rotationRound, 1);
+  assert.equal(await store.proposeSeed({ seedId: 'seed-a', claimId: first[0].claimId, proposal: null, reason: 'no gap found' }), null);
+  assert.deepEqual((await store.claimSeeds(1, { maxMining: 100 })).map(seed => seed.seedId), ['seed-b']);
+  assert.deepEqual((await store.claimSeeds(1, { maxMining: 100 })).map(seed => seed.seedId), ['seed-c']);
+  // seed-a was mined in round 1, so it is the next direction in the rotation.
+  const again = await store.claimSeeds(1, { maxMining: 100 });
+  assert.deepEqual(again.map(seed => seed.seedId), ['seed-a']);
+  assert.equal(again[0].rotationRound, 4);
+  assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-a').attempts, 2);
+});
+
+test('the store caps concurrent mining claims even when a batch asks for more', async t => {
+  const { store } = await fixture(t);
+  await store.ensureBaselineSeeds();
+  assert.equal((await store.claimSeeds(100)).length, 3);
+  assert.equal((await store.claimSeeds(100)).length, 0);
+  const counts = await store.seedCounts();
+  assert.equal(counts.mining, 3);
+  assert.equal(counts.queued, 11);
+});
+
+test('stale mining claims are released only by an explicit recovery command', async t => {
+  const { store } = await fixture(t);
+  await store.upsertSeed({ id: 'seed-stuck', title: 'Stuck direction', evidence: 'Evidence' });
+  const [claimed] = await store.claimSeeds(1);
+  assert.equal(claimed.seedId, 'seed-stuck');
+  assert.deepEqual((await store.seedCounts()).stale, []);
+  assert.deepEqual((await store.recoverSeeds({ olderThanMs: 60_000 })).recovered, []);
+  // Age the claim past the recovery threshold: an interrupted run looks like this.
+  const file = store.seedRef('seed-stuck'), seed = JSON.parse(await readFile(file, 'utf8'));
+  seed.claimedAt = new Date(Date.now() - 3_600_000).toISOString();
+  await atomicJSON(file, seed);
+  const dry = await store.recoverSeeds({ dryRun: true });
+  assert.equal(dry.stale.length, 1);
+  assert.deepEqual(dry.recovered, []);
+  const recovered = await store.recoverSeeds();
+  assert.deepEqual(recovered.recovered, ['seed-stuck']);
+  const released = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(released.status, 'queued');
+  assert.equal(released.claimId, null);
+  assert.equal(released.claimedAt, null);
+  assert.equal(released.attempts, 1);
+  assert.equal(released.lastOutcome, 'recovered-stale-claim');
+  assert.deepEqual((await store.seedCounts()).stale, []);
+  // A released direction is claimable again.
+  assert.deepEqual((await store.claimSeeds(1)).map(envelope => envelope.seedId), ['seed-stuck']);
+});
+
+test('queue-check counts in-flight miners and seed-batch claims only the headroom', async t => {
+  // The store policy cap (default 3) is raised so this test isolates the
+  // producer headroom: maxPending is the graph-level ceiling, maxMiningSeeds the
+  // store-level backstop.
+  const { store } = await fixture(t, { maxMiningSeeds: 5 });
+  await store.ensureBaselineSeeds();
+  const first = await cli('seed-batch', { dataRoot: store.root, maxPending: 3 });
+  assert.equal(first.outcome, 'ready');
+  assert.equal(first.output.items.length, 3);
+  assert.equal(first.output.mining, 3);
+  const blocked = await cli('queue-check', { dataRoot: store.root, maxPending: 3 });
+  assert.equal(blocked.outcome, 'skip');
+  assert.equal(blocked.output.backlog, 3);
+  assert.equal(blocked.output.headroom, 0);
+  const second = await cli('seed-batch', { dataRoot: store.root, maxPending: 3 });
+  assert.equal(second.outcome, 'idle');
+  assert.equal(second.output.reason, 'backlog-full');
+  // Waiting requirements share the same ceiling as in-flight miners.
+  await store.upsertRequirement(user('req-watermark'));
+  const pendingOnly = await cli('queue-check', { dataRoot: store.root, maxPending: 3 });
+  assert.equal(pendingOnly.outcome, 'skip');
+  assert.equal(pendingOnly.output.backlog, 4);
+  const roomy = await cli('seed-batch', { dataRoot: store.root, maxPending: 6 });
+  assert.equal(roomy.outcome, 'ready');
+  assert.equal(roomy.output.items.length, 2);
+  assert.equal(roomy.output.mining, 5);
+});
+
+test('the store mining cap also bounds the reported producer headroom', async t => {
+  const { store } = await fixture(t, { maxMiningSeeds: 2 });
+  await store.ensureBaselineSeeds();
+  const claimed = await cli('seed-batch', { dataRoot: store.root, maxPending: 6 });
+  assert.equal(claimed.outcome, 'ready');
+  assert.equal(claimed.output.items.length, 2);
+  const blocked = await cli('queue-check', { dataRoot: store.root, maxPending: 6 });
+  assert.equal(blocked.outcome, 'skip');
+  assert.equal(blocked.output.reason, 'mining-cap');
+  assert.equal(blocked.output.headroom, 0);
+  const batch = await cli('seed-batch', { dataRoot: store.root, maxPending: 6 });
+  assert.equal(batch.outcome, 'idle');
+  assert.equal(batch.output.reason, 'mining-cap');
+});
+
+test('a settled mined requirement returns its seed to the back of the rotation', async t => {
+  const { store } = await fixture(t);
+  await store.upsertSeed({ id: 'seed-settle', title: 'Settle me', evidence: 'Evidence' });
+  await store.upsertSeed({ id: 'seed-later', title: 'Later direction', evidence: 'Evidence' });
+  const [first] = await store.claimSeeds(1);
+  const proposed = await store.proposeSeed({
+    seedId: first.seedId,
+    claimId: first.claimId,
+    proposal: { title: 'Mined settle', description: 'Concrete change', risk: 'low', priority: 2 },
+  });
+  assert.equal(proposed.id, 'req-settle');
+  assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-settle').status, 'proposed');
+  const item = await prepared(store, 'req-settle', mined('req-settle', 'mid', { expectedRevision: proposed.revision }));
+  const artifact = await implement(store, item);
+  await pass(store, item, artifact);
+  assert.deepEqual((await store.claimSeeds(1)).map(envelope => envelope.seedId), ['seed-later']);
+  await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'reject', note: 'Not wanted' });
+  const settled = (await store.readSeeds()).find(seed => seed.id === 'seed-settle');
+  assert.equal(settled.status, 'queued');
+  assert.equal(settled.lastOutcome, 'requirement-rejected');
+  assert.equal(settled.rotationRound, 3, 'the settled direction takes the newest rotation position');
+  // Release the seed-later claim and confirm the settled direction waits behind it.
+  assert.deepEqual((await store.recoverSeeds({ olderThanMs: 0 })).recovered, ['seed-later']);
+  assert.deepEqual((await store.claimSeeds(1)).map(envelope => envelope.seedId), ['seed-later']);
+});
+
+test('retired seeds leave the rotation and re-arm to the back when restored', async t => {
+  const { store } = await fixture(t);
+  for (const id of ['seed-x', 'seed-y']) await store.upsertSeed({ id, title: id, evidence: `${id} evidence` });
+  const retired = await cli('retire-seed', { dataRoot: store.root, seedId: 'seed-x', reason: 'direction is permanent' });
+  assert.equal(retired.outcome, 'complete');
+  assert.equal(retired.output.status, 'retired');
+  assert.deepEqual((await store.claimSeeds(1)).map(envelope => envelope.seedId), ['seed-y']);
+  await assert.rejects(store.rearmSeed('seed-y'), /Only a retired seed/);
+  await assert.rejects(store.retireSeed('seed-y', 'cannot retire a mining direction'), /Recover the stale claim/);
+  const rearmed = await cli('rearm-seed', { dataRoot: store.root, seedId: 'seed-x' });
+  assert.equal(rearmed.outcome, 'queued');
+  assert.equal(rearmed.output.status, 'queued');
+  const seed = (await store.readSeeds()).find(value => value.id === 'seed-x');
+  assert.equal(seed.retiredReason, null);
+  assert.equal(seed.lastOutcome, 're-armed');
+  assert.equal(seed.rotationRound, 2);
+});
+
+test('a merged mined requirement re-arms its seed, and re-mining creates a suffixed requirement', async t => {
+  const { store } = await fixture(t);
+  await store.upsertSeed({ id: 'seed-mine', title: 'Mine me', evidence: 'Evidence' });
+  const [first] = await store.claimSeeds(1);
+  assert.equal(first.seedId, 'seed-mine');
+  const proposed = await store.proposeSeed({
+    seedId: 'seed-mine',
+    claimId: first.claimId,
+    proposal: { title: 'First mined change', description: 'Concrete change', risk: 'low', priority: 2 },
+  });
+  assert.equal(proposed.id, 'req-mine');
+  const item = await prepared(store, 'req-mine', mined('req-mine', 'low', { expectedRevision: proposed.revision }));
+  const artifact = await implement(store, item);
+  await approve(store, item, artifact);
+  assert.equal((await integrate(store, item.id, item.claimId)).outcome, 'merged');
+  const settled = (await store.readSeeds()).find(seed => seed.id === 'seed-mine');
+  assert.equal(settled.status, 'queued');
+  assert.equal(settled.lastOutcome, 'requirement-merged');
+  // Re-mining the same evergreen direction must create new work, not collide
+  // with the terminal requirement it already produced.
+  const [second] = await store.claimSeeds(1);
+  assert.equal(second.seedId, 'seed-mine');
+  const next = await store.proposeSeed({
+    seedId: 'seed-mine',
+    claimId: second.claimId,
+    proposal: { title: 'Second mined change', description: 'Another concrete change', risk: 'low', priority: 2 },
+  });
+  assert.equal(next.id, 'req-mine-r2');
+  assert.equal(next.seedId, 'seed-mine');
+  assert.notEqual(next.id, proposed.id);
+  assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-mine').status, 'proposed');
+});
+
+test('a model-supplied reason cannot fail a valid no-proposal outcome', async t => {
+  const { store } = await fixture(t);
+  await store.upsertSeed({ id: 'seed-quiet', title: 'Quiet direction', evidence: 'Evidence' });
+  const [claimed] = await store.claimSeeds(1);
+  assert.equal(await store.proposeSeed({ seedId: 'seed-quiet', claimId: claimed.claimId, proposal: null, reason: { unexpected: true } }), null);
+  let seed = (await store.readSeeds()).find(value => value.id === 'seed-quiet');
+  assert.equal(seed.status, 'queued');
+  assert.equal(seed.lastReason, null);
+  const [again] = await store.claimSeeds(1);
+  await store.proposeSeed({ seedId: 'seed-quiet', claimId: again.claimId, proposal: null, reason: 'x'.repeat(900) });
+  seed = (await store.readSeeds()).find(value => value.id === 'seed-quiet');
+  assert.equal(seed.lastReason.length, 500);
+});
+
+test('retiring a direction whose requirement is still active keeps it retired', async t => {
+  const { store } = await fixture(t);
+  await store.upsertSeed({ id: 'seed-busy', title: 'Busy direction', evidence: 'Evidence' });
+  const [claimed] = await store.claimSeeds(1);
+  const requirement = await store.proposeSeed({
+    seedId: 'seed-busy',
+    claimId: claimed.claimId,
+    proposal: { title: 'Busy change', description: 'Concrete change', risk: 'low', priority: 2 },
+  });
+  await store.retireSeed('seed-busy', 'direction no longer wanted');
+  assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-busy').status, 'retired');
+  await assert.rejects(store.rearmSeed('seed-busy'), /active requirement/);
+  // Settlement must not resurrect a retired direction.
+  await store.settleSeedForRequirementUnlocked({ id: requirement.id, seedId: 'seed-busy', status: 'merged' });
+  assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-busy').status, 'retired');
+  // Once the requirement is terminal the direction can be restored explicitly.
+  const item = await store.get(requirement.id);
+  item.status = 'rejected';
+  await store.save(item);
+  await store.rearmSeed('seed-busy');
+  assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-busy').status, 'queued');
+});
+
+test('a version 2 business store is rejected instead of reinterpreted in place', async t => {
+  const { store } = await fixture(t);
+  const legacy = path.join(store.root, '..', 'legacy-store');
+  await mkdir(legacy);
+  for (const name of ['requirements', 'seeds', 'artifacts', 'reviews', 'worktrees', 'locks']) await mkdir(path.join(legacy, name));
+  await writeFile(path.join(legacy, 'config.json'), JSON.stringify({ version: 2, dataRoot: legacy, repoRoot: store.config.repoRoot }));
+  await assert.rejects(DevelopmentStore.open(legacy), /Unsupported business store version 2/);
+  await assert.rejects(DevelopmentStore.create({ dataRoot: legacy, repoRoot: store.config.repoRoot, integrationMode: 'local' }), /Unsupported business store version 2/);
 });
 
 test('CLI protocol is JSON-only and filesystem claim lock works across processes', async t => {
@@ -247,7 +482,12 @@ test('after Human approval the workflow self-merges its PR when external merge d
   const base = await fixture(t, { integrationMode: 'pull-request', selfMergeAfterMs: 0 });
   await withPullRequestFixture(t, base, { readyMerges: false });
   const { store, repo } = base;
-  const item = await prepared(store, 'req-self');
+  // A mined requirement exercises the PR-path seed re-arm; the other PR test
+  // covers a user requirement.
+  await store.upsertSeed({ id: 'seed-self', title: 'Self merge direction', evidence: 'Evidence' });
+  const [claimed] = await store.claimSeeds(1);
+  const proposed = await store.proposeSeed({ seedId: 'seed-self', claimId: claimed.claimId, proposal: { title: 'Self merge change', description: 'Concrete change', risk: 'low', priority: 2 } });
+  const item = await prepared(store, 'req-self', mined('req-self', 'low', { expectedRevision: proposed.revision }));
   const artifact = await implement(store, item);
   await publish(store, item.id, item.claimId);
   await pass(store, item, artifact);
@@ -264,6 +504,9 @@ test('after Human approval the workflow self-merges its PR when external merge d
   assert.equal((await store.get(item.id)).integration.mechanism, 'self-merge');
   assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
   assert.equal(await git(repo, 'branch', '--list', 'auto/req-self'), '');
+  const settled = (await store.readSeeds()).find(seed => seed.id === 'seed-self');
+  assert.equal(settled.status, 'queued');
+  assert.equal(settled.lastOutcome, 'requirement-merged');
 });
 
 test('pr-init checks and safely creates the label and PR template', async t => {

@@ -356,6 +356,8 @@ async function verifyExternalMerge(store, item) {
     mergeCommit: commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD')),
     verifiedAt: new Date().toISOString(),
   };
+  // A merged requirement is terminal: its seed returns to the rotation.
+  await store.settleSeedForRequirementUnlocked(item);
 }
 
 export async function check(store, id, claimId) {

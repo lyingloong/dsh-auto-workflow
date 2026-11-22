@@ -226,6 +226,8 @@ async function verifyMerged(store, item) {
   if (!commit || !await ancestor(store.config.repoRoot, commitId(commit))) throw new Error('Reviewed/approved commit is not in integration branch; no cleanup permitted');
   item.status = 'merged';
   item.integration = { ...item.integration, state: 'verified', mergeCommit: commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD')), verifiedAt: new Date().toISOString() };
+  // A merged requirement is terminal: its seed returns to the rotation.
+  await store.settleSeedForRequirementUnlocked(item);
 }
 export async function recoverIntegration(store, id, claimId, { decision, note }) {
   return store.locked(() => store.mutate(id, claimId, async item => {

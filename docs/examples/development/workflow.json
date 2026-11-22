@@ -63,6 +63,7 @@
       "concurrency": 1,
       "inputs": {
         "dataRoot": "$input.dataRoot",
+        "maxPending": 3,
         "batchSize": 3
       },
       "config": {
@@ -116,7 +117,7 @@
           "proposal",
           "idle"
         ],
-        "prompt": "Mine one seed for genuinely useful, varied work. Read the seed JSON at input.dataRef, the requirement queue under input.dataRoot/requirements, recent commits, tests, docs and relevant source in cwd. First generate 3-5 candidate directions, covering correctness/regression, reliability/error handling, performance, UX/accessibility, test gaps/observability, security/data safety and maintainability/tooling. For each candidate state evidence, impact, risk and the smallest verifiable acceptance. Discard duplicates of existing requirements, weak or evidence-free ideas, pure style preferences and anything not independently shippable. Then choose the single highest-value concrete change. Seeds with origin=baseline are discovery directions, not proof: return idle if the repository does not support a concrete proposal. Do not invent another seed or requirement id. Do not edit the repository or business store and do not invoke approval services. Risk is your assessment: low (local reversible), mid (cross-module/uncertain), high (security/destructive/external). Return outcome proposal with output {proposal:{title,description,risk,priority:1..9,tags:[]}}, or outcome idle with output {proposal:null}. The record command derives the same stable requirement id from this seed. No default task deadline is set."
+        "prompt": "Mine one seed for genuinely useful, varied work. Read the seed JSON at input.dataRef, the requirement queue under input.dataRoot/requirements, existing branches and pull requests (when gh is available), recent commits, tests, docs and relevant source in cwd. First generate 3-5 candidate directions, covering correctness/regression, reliability/error handling, performance, UX/accessibility, test gaps/observability, security/data safety and maintainability/tooling. For each candidate state evidence, impact, risk and the smallest verifiable acceptance. Discard duplicates of existing requirements, work already proposed or merged in a branch or PR, weak or evidence-free ideas, pure style preferences and anything not independently shippable. Then choose the single highest-value concrete change. Seeds with origin=baseline are discovery directions, not proof: when the direction is already covered or the repository does not support a concrete proposal, return idle with a short reason instead of inventing work. Do not invent another seed or requirement id. Do not edit the repository or business store and do not invoke approval services. Risk is your assessment: low (local reversible), mid (cross-module/uncertain), high (security/destructive/external). Return outcome proposal with output {proposal:{title,description,risk,priority:1..9,tags:[]}}, or outcome idle with output {proposal:null,reason:why this direction has no new work}. The record command derives the stable requirement id from this seed (a repeat after the previous requirement settled gets a suffixed id); an idle seed returns to the seed rotation and is retried after the other directions. No default task deadline is set."
       }
     },
     {
@@ -128,7 +129,8 @@
         "dataRef": "$input.dataRef",
         "seedId": "$input.seedId",
         "claimId": "$input.claimId",
-        "proposal": "$prev.proposal"
+        "proposal": "$prev.proposal",
+        "reason": "$prev.reason"
       },
       "config": {
         "command": "node docs/examples/development/driver.mjs record-proposal",

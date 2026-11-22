@@ -6,6 +6,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const directories = ['requirements', 'seeds', 'artifacts', 'reviews', 'worktrees', 'locks'];
 const pendingStatuses = new Set(['queued', 'intake', 'requirement-pending', 'requirement-revision', 'ready', 'preparing', 'engineering-ready', 'engineering']);
+const storeVersion = 3;
+const defaultMaxMiningSeeds = 3;
+const defaultStaleClaimMs = 1_800_000;
 
 /** Baseline discovery directions; actual requirements are still model-proposed. */
 export const baselineSeeds = Object.freeze([
@@ -63,36 +66,60 @@ export async function atomicJSON(file, value, { immutable = false } = {}) {
   finally { await rm(temporary, { force: true }); }
 }
 
+/**
+ * A seed is a discovery direction, not a requirement. Its rotation position is
+ * `rotationRound`, so re-armed seeds queue behind every direction mined in a
+ * later round; no wall-clock cooldown is involved.
+ */
+function newSeedRecord({ id, title, evidence, tags, origin, category, relatedRequirementId, order, previous = null }) {
+  return {
+    id, title, evidence, tags, origin, category, relatedRequirementId, order,
+    status: 'queued', claimId: null, claimedAt: null,
+    attempts: previous?.attempts ?? 0,
+    rotationRound: previous?.rotationRound ?? null,
+    requirementId: previous?.requirementId ?? null,
+    lastAttemptAt: previous?.lastAttemptAt ?? null,
+    lastOutcome: previous?.lastOutcome ?? null,
+    lastReason: previous?.lastReason ?? null,
+    recoveredAt: previous?.recoveredAt ?? null,
+    retiredAt: null, retiredReason: null,
+  };
+}
+
 export class DevelopmentStore {
   constructor(config) { this.config = config; this.root = config.dataRoot; }
-  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'pull-request', prRemote = 'origin', selfMergeAfterMs = 300_000 }) {
+  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'pull-request', prRemote = 'origin', selfMergeAfterMs = 300_000, maxMiningSeeds = defaultMaxMiningSeeds, staleClaimMs = defaultStaleClaimMs }) {
     dataRoot = absolute(dataRoot, 'dataRoot'); repoRoot = await realpath(absolute(repoRoot, 'repoRoot'));
     if (!['retain', 'after-verified-merge'].includes(cleanupPolicy)) throw new Error('Invalid cleanup policy');
     if (!['local', 'pull-request'].includes(integrationMode)) throw new Error('Invalid integration mode');
     if (!Number.isInteger(selfMergeAfterMs) || selfMergeAfterMs < 0 || selfMergeAfterMs > 86_400_000) throw new Error('Invalid self-merge delay');
+    if (!Number.isInteger(maxMiningSeeds) || maxMiningSeeds < 1 || maxMiningSeeds > 100) throw new Error('Invalid max mining seeds');
+    if (!Number.isInteger(staleClaimMs) || staleClaimMs < 60_000 || staleClaimMs > 604_800_000) throw new Error('Invalid stale claim age');
     if (typeof prRemote !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(prRemote)) throw new Error('Invalid PR remote');
     if (typeof baseBranch !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(baseBranch) || baseBranch.includes('..') || baseBranch.endsWith('/') || baseBranch.endsWith('.lock')) throw new Error('Unsafe base branch');
     await mkdir(dataRoot, { recursive: true });
     if ((await lstat(dataRoot)).isSymbolicLink() || path.resolve(await realpath(dataRoot)) !== dataRoot) throw new Error('Business root must be canonical, not a symlink');
     const existing = await optionalJSON(path.join(dataRoot, 'config.json'));
     if (existing) {
-      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode || (existing.prRemote ?? 'origin') !== prRemote || (existing.selfMergeAfterMs ?? 300_000) !== selfMergeAfterMs) throw new Error('Store configuration is immutable');
+      if (existing.version !== storeVersion) throw new Error(`Unsupported business store version ${existing.version}; create a new dataRoot`);
+      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode || (existing.prRemote ?? 'origin') !== prRemote || (existing.selfMergeAfterMs ?? 300_000) !== selfMergeAfterMs || existing.maxMiningSeeds !== maxMiningSeeds || existing.staleClaimMs !== staleClaimMs) throw new Error('Store configuration is immutable');
       return DevelopmentStore.open(dataRoot);
     }
     for (const name of directories) await mkdir(path.join(dataRoot, name));
-    const config = { version: 2, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode, prRemote, selfMergeAfterMs };
+    const config = { version: storeVersion, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode, prRemote, selfMergeAfterMs, maxMiningSeeds, staleClaimMs };
     await atomicJSON(path.join(dataRoot, 'config.json'), config);
     return new DevelopmentStore(config);
   }
   static async open(dataRoot) {
     dataRoot = absolute(dataRoot, 'dataRoot');
     const config = await readJSON(path.join(dataRoot, 'config.json'));
-    if (config.version !== 2 || config.dataRoot !== dataRoot || path.resolve(await realpath(dataRoot)) !== dataRoot || (await lstat(dataRoot)).isSymbolicLink()) throw new Error('Invalid business store root');
+    // Persisted seed lifecycle, rotation and claim fields changed; old roots are
+    // evidence, not something to reinterpret in place.
+    if (config.version !== storeVersion) throw new Error(`Unsupported business store version ${config.version}; create a new dataRoot`);
+    if (config.dataRoot !== dataRoot || path.resolve(await realpath(dataRoot)) !== dataRoot || (await lstat(dataRoot)).isSymbolicLink()) throw new Error('Invalid business store root');
     for (const name of directories) if ((await lstat(path.join(dataRoot, name))).isSymbolicLink()) throw new Error('Business directories cannot be symlinks');
     absolute(config.repoRoot, 'repoRoot');
-    config.integrationMode = config.integrationMode ?? 'pull-request';
-    config.prRemote = config.prRemote ?? 'origin';
-    config.selfMergeAfterMs = config.selfMergeAfterMs ?? 300_000;
+    if (!Number.isInteger(config.maxMiningSeeds) || config.maxMiningSeeds < 1 || config.maxMiningSeeds > 100 || !Number.isInteger(config.staleClaimMs) || config.staleClaimMs < 60_000 || config.staleClaimMs > 604_800_000) throw new Error('Invalid business store root');
     if (!['local', 'pull-request'].includes(config.integrationMode)) throw new Error('Unsupported legacy integration mode; use a new dataRoot');
     return new DevelopmentStore(config);
   }
@@ -147,6 +174,11 @@ export class DevelopmentStore {
     const counterPath = path.join(this.root, 'sequence.json'), counter = await optionalJSON(counterPath) ?? { next: 1 };
     const order = counter.next++; await atomicJSON(counterPath, counter); return order;
   }
+  /** Newest rotation position. Seeds are ordered by `rotationRound`. */
+  async allocateRound() {
+    const counterPath = path.join(this.root, 'sequence.json'), counter = await optionalJSON(counterPath) ?? { next: 1 };
+    counter.round = (counter.round ?? 0) + 1; await atomicJSON(counterPath, counter); return counter.round;
+  }
   async upsertRequirement(spec) { return this.locked(async () => this.upsertUnlocked(spec)); }
   async upsertUnlocked(spec) {
     const id = requirementId(spec.id), previous = await optionalJSON(await this.checkedFile(this.ref(id)));
@@ -174,56 +206,201 @@ export class DevelopmentStore {
   async upsertSeed(spec) {
     return this.locked(async () => {
       const id = seedId(spec.id), file = await this.checkedFile(this.seedRef(id)), previous = await optionalJSON(file);
-      if (previous && previous.status !== 'queued') throw new Error('Seed already claimed/proposed; do not create duplicate requirements');
-      const relatedRequirementId = spec.relatedRequirementId ? requirementId(spec.relatedRequirementId) : null;
-      const seed = {
-        id, title: text(spec.title, 'seed title', 500), evidence: text(spec.evidence, 'seed evidence'),
-        tags: normalizeTags(spec.tags), origin: text(spec.origin ?? 'explicit', 'seed origin', 100),
+      if (previous && previous.status !== 'queued') throw new Error('Seed already claimed, proposed or retired; do not create duplicate requirements');
+      const seed = newSeedRecord({
+        id,
+        title: text(spec.title, 'seed title', 500),
+        evidence: text(spec.evidence, 'seed evidence'),
+        tags: normalizeTags(spec.tags),
+        origin: text(spec.origin ?? 'explicit', 'seed origin', 100),
         category: spec.category ? text(spec.category, 'seed category', 100) : null,
-        relatedRequirementId, order: previous?.order ?? await this.nextOrder(), status: 'queued',
-      };
+        relatedRequirementId: spec.relatedRequirementId ? requirementId(spec.relatedRequirementId) : null,
+        order: previous?.order ?? await this.nextOrder(),
+        previous,
+      });
       await atomicJSON(file, seed); return seed;
     });
   }
 
-  /** Idempotent bootstrap for discovery directions; never overwrites a claimed seed. */
+  /** Idempotent bootstrap for discovery directions; never overwrites an existing seed. */
   async ensureBaselineSeeds(seeds = baselineSeeds) {
     return this.locked(async () => {
       const created = [];
       for (const spec of seeds) {
         const id = seedId(spec.id), file = await this.checkedFile(this.seedRef(id));
         if (await optionalJSON(file)) continue;
-        const seed = {
-          id, title: text(spec.title, 'seed title', 500), evidence: text(spec.evidence, 'seed evidence'),
-          tags: normalizeTags(spec.tags), origin: 'baseline', category: text(spec.category, 'seed category', 100),
-          relatedRequirementId: null, order: await this.nextOrder(), status: 'queued',
-        };
+        const seed = newSeedRecord({
+          id,
+          title: text(spec.title, 'seed title', 500),
+          evidence: text(spec.evidence, 'seed evidence'),
+          tags: normalizeTags(spec.tags),
+          origin: 'baseline',
+          category: text(spec.category, 'seed category', 100),
+          relatedRequirementId: null,
+          order: await this.nextOrder(),
+        });
         await atomicJSON(file, seed); created.push(seed);
       }
       return created;
     });
   }
-  async claimSeeds(limit = 3) {
+
+  async readSeeds() {
+    const names = (await readdir(path.join(this.root, 'seeds'))).filter(name => /^seed-[a-z0-9][a-z0-9_-]{0,63}\.json$/.test(name));
+    return Promise.all(names.map(name => this.checkedFile(path.join(this.root, 'seeds', name)).then(readJSON)));
+  }
+
+  /**
+   * Claim the next rotation slice. Never-mined seeds come first, then the least
+   * recently mined, so a re-armed seed queues behind everything mined in later
+   * rounds. The mining cap is store policy, not an input from the graph; the
+   * `maxMining` option exists only for tests that need a whole fixture pool.
+   */
+  async claimSeeds(limit = 3, { maxMining = this.config.maxMiningSeeds } = {}) {
     limit = batchLimit(limit);
     return this.locked(async () => {
-      const files = (await readdir(path.join(this.root, 'seeds'))).filter(name => /^seed-[a-z0-9][a-z0-9_-]{0,63}\.json$/.test(name));
-      const seeds = await Promise.all(files.map(name => this.checkedFile(path.join(this.root, 'seeds', name)).then(readJSON)));
-      const selected = seeds.filter(seed => seed.status === 'queued').sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)).slice(0, limit);
-      for (const seed of selected) { seed.status = 'mining'; seed.claimId = randomUUID(); await atomicJSON(this.seedRef(seed.id), seed); }
-      return selected.map(seed => ({ dataRef: this.seedRef(seed.id), cwd: this.config.repoRoot, label: seed.title, seedId: seed.id, claimId: seed.claimId, dataRoot: this.root, origin: seed.origin ?? 'explicit', category: seed.category ?? null, relatedRequirementId: seed.relatedRequirementId ?? null }));
+      const seeds = await this.readSeeds();
+      const mining = seeds.filter(seed => seed.status === 'mining').length;
+      const room = Math.min(limit, Math.max(0, maxMining - mining));
+      if (room === 0) return [];
+      const candidates = seeds.filter(seed => seed.status === 'queued')
+        .sort((a, b) => (a.rotationRound ?? -1) - (b.rotationRound ?? -1) || a.order - b.order || a.id.localeCompare(b.id))
+        .slice(0, room);
+      if (candidates.length === 0) return [];
+      const round = await this.allocateRound(), claimedAt = new Date().toISOString();
+      for (const seed of candidates) {
+        seed.status = 'mining'; seed.claimId = randomUUID(); seed.claimedAt = claimedAt;
+        seed.attempts = (seed.attempts ?? 0) + 1; seed.rotationRound = round;
+        await atomicJSON(this.seedRef(seed.id), seed);
+      }
+      return candidates.map(seed => ({ dataRef: this.seedRef(seed.id), cwd: this.config.repoRoot, label: seed.title, seedId: seed.id, claimId: seed.claimId, dataRoot: this.root, origin: seed.origin ?? 'explicit', category: seed.category ?? null, relatedRequirementId: seed.relatedRequirementId ?? null, rotationRound: round }));
     });
   }
 
   async pendingCount() {
     return (await this.list()).filter(item => pendingStatuses.has(item.status)).length;
   }
-  async proposeSeed({ seedId: id, claimId, proposal }) {
+
+  async seedCounts({ now = Date.now() } = {}) {
+    const seeds = await this.readSeeds();
+    const counts = { total: seeds.length, queued: 0, mining: 0, proposed: 0, retired: 0, stale: [] };
+    for (const seed of seeds) {
+      counts[seed.status] = (counts[seed.status] ?? 0) + 1;
+      if (seed.status !== 'mining') continue;
+      const ageMs = claimAge(seed, now);
+      if (ageMs >= this.config.staleClaimMs) counts.stale.push({ seedId: seed.id, claimedAt: seed.claimedAt ?? null, ageMs: Number.isFinite(ageMs) ? ageMs : null, attempts: seed.attempts ?? 0 });
+    }
+    return counts;
+  }
+
+  /**
+   * Release mining claims old enough to be dead. Explicit operator action: age
+   * alone cannot tell a slow miner from an interrupted one, so the runtime never
+   * reclaims work by itself.
+   */
+  async recoverSeeds({ olderThanMs = this.config.staleClaimMs, dryRun = false } = {}) {
+    if (!Number.isInteger(olderThanMs) || olderThanMs < 0) throw new Error('olderThanMs must be a non-negative integer');
+    return this.locked(async () => {
+      const now = Date.now();
+      const stale = (await this.readSeeds()).filter(seed => seed.status === 'mining' && claimAge(seed, now) >= olderThanMs);
+      const found = stale.map(seed => ({ seedId: seed.id, claimedAt: seed.claimedAt ?? null, ageMs: Number.isFinite(claimAge(seed, now)) ? claimAge(seed, now) : null, attempts: seed.attempts ?? 0 }));
+      if (dryRun) return { dryRun: true, stale: found, recovered: [] };
+      for (const seed of stale) {
+        seed.status = 'queued'; seed.claimId = null; seed.claimedAt = null;
+        seed.lastOutcome = 'recovered-stale-claim';
+        seed.lastReason = `claim released after ${olderThanMs}ms without a recorded proposal`;
+        seed.recoveredAt = new Date(now).toISOString();
+        await atomicJSON(this.seedRef(seed.id), seed);
+      }
+      return { dryRun: false, stale: found, recovered: stale.map(seed => seed.id) };
+    });
+  }
+
+  async retireSeed(id, reason) {
+    return this.locked(async () => {
+      const file = await this.checkedFile(this.seedRef(id)), seed = await readJSON(file);
+      if (seed.status === 'mining') throw new Error('Recover the stale claim before retiring a mining seed');
+      if (seed.status === 'retired') return seed;
+      seed.status = 'retired'; seed.claimId = null; seed.claimedAt = null;
+      seed.retiredAt = new Date().toISOString();
+      seed.retiredReason = text(reason, 'retire reason', 500);
+      seed.lastOutcome = 'retired'; seed.lastReason = seed.retiredReason;
+      await atomicJSON(file, seed); return seed;
+    });
+  }
+
+  async rearmSeed(id) {
+    return this.locked(async () => {
+      const file = await this.checkedFile(this.seedRef(id)), seed = await readJSON(file);
+      if (seed.status !== 'retired') throw new Error('Only a retired seed can be re-armed');
+      // Re-arming a direction whose requirement is still in flight would open a
+      // second requirement for the same discovery direction.
+      if (seed.requirementId && !await this.requirementIsTerminal(seed.requirementId)) throw new Error('The retired seed still has an active requirement; settle it before re-arming');
+      seed.status = 'queued'; seed.retiredAt = null; seed.retiredReason = null;
+      // Take the newest rotation position so this direction goes to the back.
+      seed.rotationRound = await this.allocateRound();
+      seed.lastOutcome = 're-armed'; seed.lastReason = null;
+      await atomicJSON(file, seed); return seed;
+    });
+  }
+
+  async requirementIsTerminal(id) {
+    const item = await optionalJSON(await this.checkedFile(this.ref(id)));
+    return !item || ['merged', 'rejected'].includes(item.status);
+  }
+
+  /**
+   * Return the seed behind a settled requirement to the rotation. Called with the
+   * store lock already held: merge and PR verification run inside mutate.
+   */
+  async settleSeedForRequirementUnlocked(item) {
+    if (!item?.seedId) return null;
+    const file = await this.checkedFile(this.seedRef(item.seedId)), seed = await optionalJSON(file);
+    if (!seed || seed.status !== 'proposed' || seed.requirementId !== item.id) return null;
+    seed.status = 'queued'; seed.claimId = null; seed.claimedAt = null;
+    // Take the newest rotation position: the direction queues behind everything
+    // mined in later rounds instead of jumping back to the front.
+    seed.rotationRound = await this.allocateRound();
+    seed.lastOutcome = `requirement-${item.status}`;
+    seed.lastReason = null;
+    await atomicJSON(file, seed); return seed;
+  }
+
+  /**
+   * Stable id for the first requirement a direction produces (`req-<seed>`).
+   * A direction that yields another requirement after its previous one settled
+   * gets a suffixed id, so re-mining never tries to overwrite a terminal item.
+   */
+  async requirementIdForSeed(base) {
+    const first = requirementId(`req-${base}`);
+    if (!await optionalJSON(await this.checkedFile(this.ref(first)))) return first;
+    for (let attempt = 2; attempt < 1000; attempt++) {
+      const suffix = `-r${attempt}`;
+      const candidate = requirementId(`req-${base.slice(0, 64 - suffix.length)}${suffix}`);
+      if (!await optionalJSON(await this.checkedFile(this.ref(candidate)))) return candidate;
+    }
+    throw new Error('Too many requirements for this seed');
+  }
+
+  async proposeSeed({ seedId: id, claimId, proposal, reason }) {
     return this.locked(async () => {
       const seed = await readJSON(await this.checkedFile(this.seedRef(id)));
       if (seed.claimId !== claimId || seed.status !== 'mining') throw new Error('Stale seed claim');
-      if (proposal === null) { seed.status = 'idle'; seed.claimId = null; await atomicJSON(this.seedRef(id), seed); return null; }
-      const item = await this.upsertUnlocked({ ...proposal, id: `req-${seedId(id).slice(5)}`, source: 'mined', seedId: id });
-      seed.status = 'proposed'; seed.requirementId = item.id; await atomicJSON(this.seedRef(id), seed); return item;
+      const now = new Date().toISOString();
+      if (proposal === null || proposal === undefined) {
+        seed.status = 'queued'; seed.claimId = null; seed.claimedAt = null;
+        seed.lastOutcome = 'no-proposal';
+        // Diagnostic metadata from the model must never turn a valid idle
+        // outcome into a failed packet.
+        seed.lastReason = typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 500) : null;
+        seed.lastAttemptAt = now;
+        await atomicJSON(this.seedRef(id), seed); return null;
+      }
+      const item = await this.upsertUnlocked({ ...proposal, id: await this.requirementIdForSeed(seedId(id).slice(5)), source: 'mined', seedId: id });
+      seed.status = 'proposed'; seed.requirementId = item.id;
+      seed.lastAttemptAt = now; seed.lastOutcome = 'proposed'; seed.lastReason = null;
+      seed.claimId = null; seed.claimedAt = null;
+      await atomicJSON(this.seedRef(id), seed); return item;
     });
   }
   async claimBatch(limit = 3) {
@@ -277,12 +454,14 @@ export class DevelopmentStore {
     });
   }
   async mergeDecision(id, claimId, { decision, note, actor = 'human', artifactRef }) {
-    return this.mutate(id, claimId, item => {
+    return this.mutate(id, claimId, async item => {
       if (item.status !== 'human-pending' || !['approve', 'revise', 'reject'].includes(decision) || item.implementation?.artifactRef !== artifactRef) throw new Error('No matching implementation approval pending');
       if (decision !== 'approve') text(note, 'review feedback');
       item.approval = { decision, revision: item.revision, artifactRef, commit: item.implementation.commit, actor: text(actor, 'actor', 200), note: note ?? '' };
       if (decision !== 'approve') item.feedback.push({ scope: 'implementation', artifactRef, note });
       item.status = decision === 'approve' ? 'approved' : decision === 'revise' ? 'engineering-ready' : 'rejected';
+      // A rejected requirement is terminal: its seed returns to the rotation.
+      if (item.status === 'rejected') await this.settleSeedForRequirementUnlocked(item);
     });
   }
 }
@@ -290,3 +469,7 @@ export function assertClaim(item, claimId) { if (!claimId || claimId !== item.cl
 export function compareRequirements(a, b) { return (a.source === 'user' ? 0 : 1) - (b.source === 'user' ? 0 : 1) || a.priority - b.priority || a.order - b.order || a.id.localeCompare(b.id); }
 function normalizeTags(tags = []) { if (!Array.isArray(tags) || tags.length > 30) throw new Error('Invalid tags'); return tags.map(tag => text(tag, 'tag', 100)); }
 function batchLimit(limit) { if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('batchSize must be 1..100'); return limit; }
+function claimAge(seed, now) {
+  const claimedAt = Date.parse(seed.claimedAt ?? '');
+  return Number.isFinite(claimedAt) ? Math.max(0, now - claimedAt) : Number.POSITIVE_INFINITY;
+}
