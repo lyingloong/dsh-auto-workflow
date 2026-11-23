@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 修复失败后的调度楔子：每个调度切片把所属 packet 已非 active 的 `ready`/`waiting` token 归档为 `cancelled`（reason `packet_not_active`），不再出现"状态 running、队列非空但永不执行"；失败/中断 token 仍作为 hot 证据保留。（#30）
+- `summarizeRun` 的 `error` 只表示 run 级错误，新增有界 `lastFailure` 记录最近一次失败；`auto_workflow_control` 新增 `recover:true`，清理陈旧 pause/error 并唤醒 live run，不重放失败或中断工作。（#30）
+
 - 需求审批从看板移到业务仓库的 GitHub issue：mid/high 挖掘需求由 `publish-requirement-issue` 脱敏发布，`check-requirement-issue` 读取维护者评论（`@workflow approve` / `@workflow reject <理由>`，仅 OWNER / MEMBER / COLLABORATOR 生效），`requirement-gate` 每 30 分钟复查；决定按 revision 绑定，旧评论不会批准新内容。移除 `requirement-human` 与 `requirement-decision` 节点/命令；`pr-init` 增加三个需求审批标签的检查与创建。
 - `runner.updateModels` 的忙碌判定改为只看 `running`/`ready` token。v1.2.0 里"等待调度切片收尾"的写法会与调度锁互等，罕见情况下延迟 2 秒后仍然返回 409；现在与定义更新的守卫一致，parked 或无工作的收尾切片不再阻止改模型。
 

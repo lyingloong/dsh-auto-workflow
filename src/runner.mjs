@@ -414,6 +414,18 @@ export class WorkflowRunner {
     return this.locked(session, async () => {
       if (this.closed) throw failure('runner_closed', 'Workflow runner is shutting down.');
       const store = this.storeFor(session);
+      if (update.recover === true) {
+        const entry = this.active.get(session);
+        if (!entry) throw failure('no_live_run', 'No live run is mounted; mount it before recovering.');
+        if (['interrupted', 'failed'].includes(entry.state.status)) throw failure('run_not_replayable', 'Inspect interrupted/failed evidence and start a new run; recovery never replays it.');
+        entry.state.pauseReason = null;
+        entry.state.yieldReason = null;
+        entry.state.lastError = null;
+        entry.wakePending = true;
+        await entry.persist();
+        entry.io.notify();
+        return { control: await store.loadControl(), state: structuredClone(entry.state) };
+      }
       if (update.continuous !== undefined && typeof update.continuous !== 'boolean') throw failure('invalid_argument', 'continuous must be boolean');
       const current = await store.loadControl();
       const nodes = { ...current.nodes };

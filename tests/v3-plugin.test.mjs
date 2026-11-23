@@ -242,3 +242,21 @@ test('stop interrupts uncertain execution, keeps evidence, and a new run can sta
   assert.notEqual(replacement.runId, started.runId);
   assert.equal(replacement.status, 'running');
 });
+
+test('control recover clears a stale pause on the live run and requires a mounted run', async t => {
+  const definition = { apiVersion: 2, name: 'waiting', entry: 'wait', nodes: [{ id: 'wait', type: 'human', config: { outcomes: ['approve'] } }], edges: [] };
+  const { call, mounted, tools } = await setup(t, { definition });
+  await assert.rejects(() => call('auto_workflow_control', { recover: true }), /No live run/);
+  await call('auto_workflow_start', { input: { id: 'p0' } });
+  await call('auto_workflow_run', {});
+  await until(async () => (await call('auto_workflow_status', {})).run.counts.waiting === 1, 'human wait');
+  const entry = mounted.runner.active.get('session-a');
+  assert.ok(entry, 'live entry');
+  entry.state.pauseReason = 'nodes_disabled';
+  entry.state.lastError = 'stale historical failure';
+  const recovered = await call('auto_workflow_control', { recover: true });
+  assertToolOutput(tools.get('auto_workflow_control'), recovered);
+  assert.equal(recovered.requested, true);
+  assert.equal(entry.state.pauseReason, null);
+  assert.equal(entry.state.lastError, null);
+});

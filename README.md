@@ -72,7 +72,7 @@ flowchart TD
 | `auto_workflow_run` | 挂载或继续当前会话的常驻 job，立即返回。 |
 | `auto_workflow_enqueue` | 向现有 run 添加独立 packet；新工作不靠重启 run 输入。 |
 | `auto_workflow_decide` | 解决一个指定 Human token，不代替其他审批。 |
-| `auto_workflow_control` | 全局暂停/继续、单节点队列开关，或显式 Stop。 |
+| `auto_workflow_control` | 全局暂停/继续、单节点队列开关、`recover:true` 唤醒卡住的 live run，或显式 Stop。 |
 | `auto_workflow_status` | 只读查看队列、并发、Human 待办和私有看板 URL。 |
 
 节点类型包括 `agent`、`command`、`http`、`human`、`fanout`、`join`、`gate`、`subworkflow`。字段与协议见 [插件参考](<docs/plugin-summary.md>)；不要循环轮询 `run`。
@@ -87,7 +87,7 @@ flowchart TD
 
 - 插件负责通用调度和引用；需求优先级、Git worktree、审查与合并策略属于示例业务代码。
 - command/HTTP 权限默认 deny。命令 allowlist 不是文件系统沙箱，也不替代 agent 工具权限。
-- 暂停和禁用节点不会取消在途工作；Stop 不等于回滚。失败或中断后先检查副作用，再显式恢复或新建 run。
+- 暂停和禁用节点不会取消在途工作；Stop 不等于回滚。失败或中断后先检查副作用，再显式恢复或新建 run。失败 token 归档为历史证据后不再占用 live 状态；`recover:true` 清理陈旧 pause/error 并唤醒，不重放失败工作。
 - 单 Host、本地文件锁；不是分布式队列、外部审批服务或 exactly-once Git/HTTP 事务。工作流会 push 自己的需求分支并创建/更新 PR，但不会 merge 远端、不会自行批准 GitHub PR，也不会部署。
 - 包版本 `1.2.0`、定义 `apiVersion: 2`、运行状态 `version: 3`、示例业务存储 `version: 3` 是不同层的版本号，不要求相同。废弃开发序列与迁移边界见 [更新记录](<CHANGELOG.md>)。
 

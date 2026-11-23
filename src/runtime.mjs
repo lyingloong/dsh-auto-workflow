@@ -114,6 +114,12 @@ export async function run(state, executors, { io, checkpoint = async () => {}, s
   state.pauseReason = null; state.yieldReason = null;
   try {
     while (true) {
+      // A ready/waiting token whose packet is gone or no longer active can never
+      // run; keeping it would report a queued run that parks forever. Archive it
+      // as evidence instead of wedging the slice. Failed/interrupted tokens stay
+      // as hot evidence and are not schedulable anyway.
+      const stale = state.tokens.filter(token => ['ready', 'waiting'].includes(token.status) && state.packets[token.packetId]?.status !== 'active');
+      if (stale.length) await reconcileTokens(state, stale, io, now);
       const observed = io.version?.();
       currentControl = typeof control === 'function' ? await control() : control;
       updateNodeStats(state, currentControl);
@@ -280,6 +286,9 @@ async function executeTokenScoped(state, token, node, executors, { io, save, sig
       // Retain uncertain/failed attempts as evidence; never automatically replay.
       for (const sibling of [...state.tokens]) if (sibling.packetId === packet.id && sibling.id !== token.id && ['ready', 'waiting'].includes(sibling.status)) await archiveToken(state, sibling, 'cancelled', io, now);
       await archiveRecord(state, { type: 'token', id: token.id, packetId: token.packetId, nodeId: token.nodeId, status: token.status, attempt: token.attempt, outcome: token.outcome ?? null, inputRef: token.inputRef, outputRef: token.outputRef ?? null, error: token.error.message, createdAt: token.createdAt, updatedAt: token.updatedAt }, io);
+      // The live token stays as hot evidence, but it no longer defines the run
+      // error: a bounded lastFailure records the most recent attempt.
+      state.lastFailure = { tokenId: token.id, packetId: token.packetId, nodeId: token.nodeId, status: token.status, code: token.error.code, message: token.error.message, at: now() };
       await registerArrival(state, packet, io, now, true);
     });
     await save(); wake(io, notify);
@@ -444,6 +453,7 @@ async function advanceJoin(state, parent, token, io, now) {
     const stats = statsOf(state, token.nodeId); stats.failed = (stats.failed ?? 0) + 1;
     for (const sibling of [...state.tokens]) if (sibling.packetId === parent.id && sibling !== token && ['ready', 'waiting'].includes(sibling.status)) await archiveToken(state, sibling, 'cancelled', io, now);
     await archiveRecord(state, { type: 'token', id: token.id, packetId: parent.id, nodeId: token.nodeId, status: 'failed', inputRef: token.inputRef, error: token.error.message, createdAt: token.createdAt, updatedAt: token.updatedAt }, io);
+    state.lastFailure = { tokenId: token.id, packetId: parent.id, nodeId: token.nodeId, status: 'failed', code: token.error.code, message: token.error.message, at: now() };
     await registerArrival(state, parent, io, now, true);
   }
 }
@@ -455,6 +465,19 @@ async function archiveToken(state, token, status, io, now) {
     state.counts.completed += 1;
     const stats = statsOf(state, token.nodeId); stats.completed = (stats.completed ?? 0) + 1;
   }
+}
+/** Archive tokens that can never execute because their packet is not active. */
+async function reconcileTokens(state, tokens, io, now) {
+  for (const token of tokens) {
+    await archiveRecord(state, {
+      type: 'token', id: token.id, packetId: token.packetId, nodeId: token.nodeId,
+      status: 'cancelled', attempt: token.attempt, outcome: token.outcome ?? null,
+      inputRef: token.inputRef, outputRef: token.outputRef ?? null, model: token.model ?? null,
+      reason: 'packet_not_active', createdAt: token.createdAt, updatedAt: now(),
+    }, io);
+    state.tokens = state.tokens.filter(candidate => candidate !== token);
+  }
+  return tokens.length;
 }
 async function archiveRecord(state, record, io) {
   await io.archive(record);

@@ -37,9 +37,12 @@ Human token 不占 worker 槽，也不停止其他 packet、节点或新到达�
 | --- | --- | --- | --- |
 | `continuous:false` | 全局暂停 | 排空在途执行，不主动取消 | 保留；`continuous:true` 继续 |
 | `nodeId` + `enabled:false` | 暂停这个节点的队列 | 该节点在途工作仍可完成 | 保留；重新 enabled 唤醒 |
+| `recover:true` | 不改控制位 | 不取消 | 清理陈旧 pause/error、归档不可执行 token，并唤醒 live run；不重放失败或中断工作 |
 | `stop:true` | 停止当前 native job | 取消/收束执行，保存不确定状态 | 不授权自动重放；先检查再决定下一步 |
 
 禁用一个节点不是取消。Stop 不是 rollback，也不会调用示例的业务 cleanup。单独关闭 producer gate 可停止后续周期，但已准入分支仍可完成；若还要阻止未启动的 miner，要同时关闭对应队列。
+
+失败 token 与 Join 失败会写入 history，并从 live 调度状态移除；最近一次失败保留在有界 `lastFailure` 中，`run.error` 只表示 run 级错误。每个调度切片还会把所属 packet 已非 active 的 ready/waiting token 归档为 `cancelled`（reason `packet_not_active`），避免出现"状态 running、队列非空但永不执行"的卡死；证据仍在 history 中。
 
 ## 落盘、Host 重启与恢复
 
@@ -86,6 +89,7 @@ Host 停止、插件重载或执行所有者丢失后：
 | start 成功但没有执行 | 是否调用 run/enqueue？`continuous` 是否开启？start 本身不执行。 |
 | 节点一直 idle | 这是服务状态；检查有无该节点的 queued 输入，不要当作永久完成。 |
 | 节点队列不前进 | 检查节点 enabled、根/节点并发容量以及 `pauseReason`。 |
+| run 一直 running、队列非空但无执行 | 先看 `nodeStats` 与 `lastFailure`；`recover:true` 会归档不可执行 token 并唤醒 live run。仍有失败/中断证据时检查 history，不要直接新建 run。 |
 | `control_off` / `nodes_disabled` | 控制暂停，不等于 job 已取消；按意图继续或 Stop。 |
 | 开发示例不再领取新需求 | 是否仅运行了默认有限 dispatch，而未向 `mine-gate` enqueue 一次 producer？不要为每次运行重复添加 producer。 |
 | `permission_denied` | 命令或 HTTP host 超出 grant；先取得用户批准，不能静默放宽。 |

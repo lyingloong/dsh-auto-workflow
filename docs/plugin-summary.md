@@ -121,10 +121,10 @@
 | `auto_workflow_run` | 挂载/继续当前 run 的原生 job，立即返回回执。 |
 | `auto_workflow_enqueue` | 向现有 run 添加新 packet，可指定 `nodeId`；控制允许且没有 job 时可冷启动。 |
 | `auto_workflow_decide` | 为一个等待中的 Human `tokenId` 提交声明过的 outcome 和可选 output。 |
-| `auto_workflow_control` | `continuous` 暂停/继续；`nodeId` + `enabled` 切换队列；`stop:true` 中断 job。 |
+| `auto_workflow_control` | `continuous` 暂停/继续；`nodeId` + `enabled` 切换队列；`recover:true` 清理陈旧 pause/error、归档不可执行 token 并唤醒 live run；`stop:true` 中断 job。 |
 | `auto_workflow_status` | 只读状态、绑定 cwd、job、packet 计数、节点池、Human 待办和看板 URL。 |
 
-入队不是重启；决策不是新 packet；读取 status 不执行也不重试工作。控制和恢复详见 [生命周期](<run-lifecycle.md>)。
+入队不是重启；决策不是新 packet；读取 status 不执行也不重试工作。失败 token 记录进 history 后从 live 调度状态移除，`run.error` 只表示 run 级错误，最近一次失败放在有界 `lastFailure`。控制和恢复详见 [生命周期](<run-lifecycle.md>)。
 
 ## 5. 存储、看板与恢复边界
 

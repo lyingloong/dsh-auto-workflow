@@ -3,7 +3,6 @@ import { describeDefinition } from './definition.mjs';
 import { humanOutcomes, waitingHumanTokens } from './runtime.mjs';
 
 export function summarizeRun(state) {
-  const failed = state.tokens.find(token => ['failed', 'interrupted'].includes(token.status));
   const current = state.tokens.find(token => token.status === 'running') ?? state.tokens.at(-1);
   const nodes = new Map(state.definition.nodes.map(node => [node.id, node]));
   const liveCounts = { running: 0, queued: 0, waiting: 0 };
@@ -24,7 +23,8 @@ export function summarizeRun(state) {
     current: current ? { tokenId: current.id, packetId: current.packetId, nodeId: current.nodeId, status: current.status, activity: current.activity ?? null, updatedAt: current.updatedAt } : {},
     counts: { ...structuredClone(state.counts), ...liveCounts }, nodeStats,
     waiting: waitingHumanTokens(state).map(token => ({ tokenId: token.id, packetId: token.packetId, nodeId: token.nodeId, inputRef: token.inputRef, title: nodes.get(token.nodeId)?.title ?? token.nodeId, outcomes: humanOutcomes(nodes.get(token.nodeId)) })),
-    error: state.lastError ?? (failed?.error ? `${failed.error.code}: ${failed.error.message}` : ''),
+    error: state.lastError ?? '',
+    lastFailure: state.lastFailure ?? null,
   };
 }
 export function publicRun(state) {

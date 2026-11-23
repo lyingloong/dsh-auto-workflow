@@ -51,7 +51,7 @@ Tools:
 - auto_workflow_run: mount/continue the session-owned native job. Returns immediately; use auto_workflow_status or the board, not polling.
 - auto_workflow_enqueue: add a new independent packet (optionally at a specific node) to the live run and wake the scheduler. Use this for incoming work instead of restarting the workflow.
 - auto_workflow_decide: resolve one waiting Human packet with a declared outcome and optional note.
-- auto_workflow_control: pause/resume the whole scheduler, switch one node's queue on/off, or stop the native job. A paused/disabled node does not discard its queue.
+- auto_workflow_control: pause/resume the whole scheduler, switch one node's queue on/off, recover a parked live run with recover:true, or stop the native job. A paused/disabled node does not discard its queue; recover clears stale pause/error state and never replays failed work.
 - auto_workflow_status: read persisted state, per-node service status, pending Human items, and the board URL. Reading never executes or replays work.
 
 Interrupted/failed executions are retained as evidence and are never replayed automatically. Inspect their side effects, then start a new run. A business negative outcome (fail/needs_revision) follows its declared edge; it is not model fallback.
@@ -261,11 +261,12 @@ function toolDecide({ runner, sessionIdOf }) {
 function toolControl({ runner, storeFor, sessionIdOf }) {
   return {
     name: 'auto_workflow_control',
-    description: 'Change persistent scheduler control: pause/resume all work with continuous, enable/disable one node queue with nodeId+enabled, or stop the native job with stop:true. Disabling a node keeps its queued packets; disabling never cancels active work. Stop interrupts uncertain execution and never replays it.',
+    description: 'Change persistent scheduler control: pause/resume all work with continuous, enable/disable one node queue with nodeId+enabled, recover a parked live run with recover:true, or stop the native job with stop:true. Disabling a node keeps its queued packets; disabling never cancels active work. Recover clears a stale pause/error and wakes the live run without replaying failed or interrupted work. Stop interrupts uncertain execution and never replays it.',
     parameters: objectSchema({
       continuous: booleanSchema('false pauses new admissions and drains active nodes; true resumes.'),
       nodeId: stringSchema('Node whose queue switch to change.'),
       enabled: booleanSchema('Whether that node queue is enabled; defaults true when nodeId is present.'),
+      recover: booleanSchema('Clear a stale pause/error, archive unrunnable tokens, and wake the live run. Failed or interrupted evidence is retained.'),
       stop: booleanSchema('Stop the session-owned native job.'),
     }, []),
     output: {
@@ -285,12 +286,13 @@ function toolControl({ runner, storeFor, sessionIdOf }) {
         return { requested: stopped.requested, jobId: stopped.jobId ?? '', control: await storeFor(exec).loadControl() };
       }
       const update = {};
+      if (args?.recover === true) update.recover = true;
       if (args?.continuous !== undefined) update.continuous = args.continuous;
       if (args?.nodeId !== undefined) {
         update.nodeId = requireText(args.nodeId, 'nodeId');
         update.enabled = args.enabled !== false;
       }
-      if (Object.keys(update).length === 0) throw new Error('set continuous, nodeId/enabled, or stop:true');
+      if (Object.keys(update).length === 0) throw new Error('set continuous, nodeId/enabled, recover:true, or stop:true');
       const result = await runner.control(session, update, { exec });
       return {
         requested: true,
