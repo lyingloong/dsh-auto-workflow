@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 新增图内 intake planner：`intake-record` → `intake-plan`（`reasoningEffort: low`）→ `intake-apply`，把宽泛用户请求固化为 1 条具体需求 + 0–3 个去重后的 seed。原文先以 `planning` 状态落盘（不可 claim、计入 backlog），planner 失败不丢输入；派生 seed 只进正常轮转、不自动开挖。（#28）
+
 - 修复失败后的调度楔子：每个调度切片把所属 packet 已非 active 的 `ready`/`waiting` token 归档为 `cancelled`（reason `packet_not_active`），不再出现"状态 running、队列非空但永不执行"；失败/中断 token 仍作为 hot 证据保留。（#30）
 - `summarizeRun` 的 `error` 只表示 run 级错误，新增有界 `lastFailure` 记录最近一次失败；`auto_workflow_control` 新增 `recover:true`，清理陈旧 pause/error 并唤醒 live run，不重放失败或中断工作。（#30）
 

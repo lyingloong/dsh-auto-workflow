@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, rename, readdir, lstat, realpath, rm } from
 import { setTimeout as delay } from 'node:timers/promises';
 
 const directories = ['requirements', 'seeds', 'artifacts', 'reviews', 'worktrees', 'locks'];
-const pendingStatuses = new Set(['queued', 'intake', 'requirement-pending', 'requirement-revision', 'ready', 'preparing', 'engineering-ready', 'engineering']);
+const pendingStatuses = new Set(['queued', 'planning', 'intake', 'requirement-pending', 'requirement-revision', 'ready', 'preparing', 'engineering-ready', 'engineering']);
 const storeVersion = 3;
 const defaultMaxMiningSeeds = 3;
 const defaultStaleClaimMs = 1_800_000;
@@ -205,21 +205,91 @@ export class DevelopmentStore {
     return this.save(item);
   }
   async upsertSeed(spec) {
+    return this.locked(() => this.upsertSeedUnlocked(spec));
+  }
+  async upsertSeedUnlocked(spec) {
+    const id = seedId(spec.id), file = await this.checkedFile(this.seedRef(id)), previous = await optionalJSON(file);
+    if (previous && previous.status !== 'queued') throw new Error('Seed already claimed, proposed or retired; do not create duplicate requirements');
+    const seed = newSeedRecord({
+      id,
+      title: text(spec.title, 'seed title', 500),
+      evidence: text(spec.evidence, 'seed evidence'),
+      tags: normalizeTags(spec.tags),
+      origin: text(spec.origin ?? 'explicit', 'seed origin', 100),
+      category: spec.category ? text(spec.category, 'seed category', 100) : null,
+      relatedRequirementId: spec.relatedRequirementId ? requirementId(spec.relatedRequirementId) : null,
+      order: previous?.order ?? await this.nextOrder(),
+      previous,
+    });
+    await atomicJSON(file, seed); return seed;
+  }
+
+  /**
+   * Store a raw user request that still needs decomposition. The item is not
+   * claimable (status `planning`) until a planner result is applied, so a failed
+   * planner never loses the user's words.
+   */
+  async createIntake({ text: raw, id, tags } = {}) {
     return this.locked(async () => {
-      const id = seedId(spec.id), file = await this.checkedFile(this.seedRef(id)), previous = await optionalJSON(file);
-      if (previous && previous.status !== 'queued') throw new Error('Seed already claimed, proposed or retired; do not create duplicate requirements');
-      const seed = newSeedRecord({
-        id,
-        title: text(spec.title, 'seed title', 500),
-        evidence: text(spec.evidence, 'seed evidence'),
-        tags: normalizeTags(spec.tags),
-        origin: text(spec.origin ?? 'explicit', 'seed origin', 100),
-        category: spec.category ? text(spec.category, 'seed category', 100) : null,
-        relatedRequirementId: spec.relatedRequirementId ? requirementId(spec.relatedRequirementId) : null,
-        order: previous?.order ?? await this.nextOrder(),
-        previous,
+      const target = id ? requirementId(id) : requirementId(`req-intake-${randomUUID().slice(0, 8)}`);
+      if (await optionalJSON(await this.checkedFile(this.ref(target)))) throw new Error('Intake requirement already exists');
+      const words = String(raw ?? '').trim();
+      const title = words.split(/\r?\n/)[0].slice(0, 200).trim() || 'Untitled intake';
+      const item = await this.upsertUnlocked({
+        id: target, source: 'user', title, description: words || 'Untitled intake', risk: 'mid', priority: 0, tags: tags ?? [],
       });
-      await atomicJSON(file, seed); return seed;
+      item.status = 'planning';
+      item.claimId = randomUUID();
+      item.needsPlanning = true;
+      item.intakeReason = null;
+      return this.save(item);
+    });
+  }
+
+  /**
+   * Apply one planner result to a raw intake item. `requirement: null` keeps the
+   * raw request as the requirement; seeds are deduplicated against existing
+   * directions and requirements.
+   */
+  async applyIntake(id, claimId, { requirement = null, seeds = [], reason = null } = {}) {
+    return this.locked(async () => {
+      const item = await this.get(id);
+      assertClaim(item, claimId);
+      if (item.status !== 'planning' || item.needsPlanning !== true) throw new Error('Requirement is not waiting for an intake plan');
+      if (requirement && typeof requirement === 'object') {
+        item.title = text(requirement.title, 'title', 500);
+        item.description = text(requirement.description, 'description');
+        item.risk = risk(requirement.risk ?? 'mid');
+        item.tags = normalizeTags(requirement.tags ?? item.tags);
+        item.intakeReason = null;
+      } else {
+        item.intakeReason = reason ? text(reason, 'intake reason', 500) : 'planner returned no requirement';
+      }
+      item.needsPlanning = false;
+      item.status = 'queued';
+      item.claimId = null;
+      await this.save(item);
+      const existingSeeds = await this.readSeeds();
+      const seedTitles = new Set(existingSeeds.map(seed => normalizeTitle(seed.title)));
+      const requirementTitles = new Set((await this.list()).map(entry => normalizeTitle(entry.title)));
+      const created = [], skipped = [];
+      for (const proposal of Array.isArray(seeds) ? seeds.slice(0, 3) : []) {
+        const title = text(proposal?.title, 'seed title', 500);
+        const normalized = normalizeTitle(title);
+        if (seedTitles.has(normalized)) { skipped.push({ title, reason: 'a seed with the same direction exists' }); continue; }
+        if (requirementTitles.has(normalized)) { skipped.push({ title, reason: 'a requirement with the same title exists' }); continue; }
+        const seed = await this.upsertSeedUnlocked({
+          id: intakeSeedId(title, existingSeeds),
+          title,
+          evidence: text(proposal?.evidence, 'seed evidence'),
+          tags: proposal?.tags,
+          origin: 'user',
+          category: proposal?.category ? proposal.category : null,
+          relatedRequirementId: item.id,
+        });
+        existingSeeds.push(seed); seedTitles.add(normalized); created.push(seed);
+      }
+      return { item, created, skipped };
     });
   }
 
@@ -502,6 +572,17 @@ export class DevelopmentStore {
 export function assertClaim(item, claimId) { if (!claimId || claimId !== item.claimId) throw new Error('Stale/missing requirement claim'); }
 export function compareRequirements(a, b) { return (a.source === 'user' ? 0 : 1) - (b.source === 'user' ? 0 : 1) || a.priority - b.priority || a.order - b.order || a.id.localeCompare(b.id); }
 function normalizeTags(tags = []) { if (!Array.isArray(tags) || tags.length > 30) throw new Error('Invalid tags'); return tags.map(tag => text(tag, 'tag', 100)); }
+function normalizeTitle(value) { return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' '); }
+function intakeSeedId(title, existing) {
+  const base = String(title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || randomUUID().slice(0, 8);
+  let candidate = `seed-${base}`;
+  if (!existing.some(seed => seed.id === candidate)) return candidate;
+  for (let index = 2; index < 100; index += 1) {
+    candidate = `seed-${base}-${index}`;
+    if (!existing.some(seed => seed.id === candidate)) return candidate;
+  }
+  throw new Error('Too many seeds for this intake direction');
+}
 function batchLimit(limit) { if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('batchSize must be 1..100'); return limit; }
 function claimAge(seed, now) {
   const claimedAt = Date.parse(seed.claimedAt ?? '');

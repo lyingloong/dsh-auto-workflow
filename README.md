@@ -40,6 +40,8 @@ dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow
 ```mermaid
 flowchart TD
   U[用户 intake · priority 0] --> Q[稳定 ID 的需求队列]
+  U -->|宽泛请求| IP[intake planner · low effort]
+  IP --> Q
   S[已有证据 seeds] --> M[周期 producer / 挖掘]
   M --> Q
   Q --> R{需求来源与风险}

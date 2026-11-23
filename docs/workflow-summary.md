@@ -33,7 +33,7 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 
 ## 输入来源与持续 producer
 
-- **用户需求**只由获得授权的 intake 调用写入。优先级强制为 `0`，即使风险为 high 也跳过“需求是否开展”的审批；仍必须通过实现 review 与 Human merge 门禁。
+- **用户需求**只由获得授权的 intake 调用写入。优先级强制为 `0`，即使风险为 high 也跳过“需求是否开展”的审批；仍必须通过实现 review 与 Human merge 门禁。宽泛请求可以走图内 intake planner：`intake-record` 先把原文落成 `planning` 需求，`intake-plan`（低 reasoning effort）产出 1 条具体需求 + 0–3 个方向，`intake-apply` 去重后转 `queued`；派生 seed 只进正常轮转，不自动开挖。
 - **挖掘需求**来自事先提供的真实证据 seed，优先级为 `1..9`。low 跳过需求审批，mid/high 在业务仓库的审批 issue 上由维护者评论决定：`@workflow approve` 或 `@workflow reject <理由>`，只有 OWNER / MEMBER / COLLABORATOR 生效，拒绝必须带理由。issue 发布前先做确定性脱敏（路径、邮箱、令牌、私有地址），首查立即执行、之后每 30 分钟复查。没有 seed 就不调用挖掘模型；无可行动建议的 seed 回到轮转队列并记下原因，不凭空制造需求，也不会被永久挂起。初始化会写入一组可选的 baseline discovery seeds（docs、refactor、page、chore、tests、dependency 等），它们只是发现方向，不是证据；miner 找不到具体问题仍应返回 idle。seed 的公平性按轮转位置 `rotationRound` 排序（从未挖过的优先，其次最久未挖），不使用时间冷却；`proposal:null` 保留原轮次，需求 merged/rejected 后其 seed 以新的轮转位置重新入队。同一方向的重复提案在前一个需求 settle 后使用 `req-<seed>-r<n>` 后缀，不会覆盖已终止的需求。
 - 默认 `dispatch` 只准入有限批次。要持续处理，在同一 run 中显式向 `mine-gate` enqueue **一个** producer。它每轮经 60 秒 gate、backlog 水位检查、seed claim、detached miner packet、队列 dispatch、detached 需求 packet 后返回 gate。`backlog = 待实现需求（含 engineering）+ 正在 mining 的 seed`，达到工程师并发数 3 即只 dispatch 已有队列；`seed-batch` 只领剩余余额并受 `maxMiningSeeds` 限制。中断后留在 `mining` 的 claim 由 `driver status` 报出，只能显式 `recover-seeds` 释放，运行时不自动回收。
 - 慢模型和 Human 等待不会牵住 detached producer。后续 seed 与用户需求可以继续写入；需要即时处理时可 enqueue 有限 `dispatch`，不要重复启动 producer。

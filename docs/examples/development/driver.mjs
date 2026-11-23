@@ -23,8 +23,12 @@ async function executeStage(name, input) {
     const created = await store.ensureBaselineSeeds();
     return result('complete', { ...rootEnvelope(store), version: store.config.version, baselineSeeds: created.length, maxMiningSeeds: store.config.maxMiningSeeds, staleClaimMs: store.config.staleClaimMs });
   }
-  if (['requirement', 'seed', 'claim', 'seed-batch', 'queue-check', 'status', 'recover-seeds', 'retire-seed', 'rearm-seed'].includes(name)) {
+  if (['requirement', 'seed', 'claim', 'seed-batch', 'queue-check', 'status', 'recover-seeds', 'retire-seed', 'rearm-seed', 'intake-record'].includes(name)) {
     const store = await DevelopmentStore.open(absolute(input.dataRoot, 'dataRoot'));
+    if (name === 'intake-record') {
+      const item = await store.createIntake({ text: input.text, id: input.id, tags: input.tags });
+      return result('complete', { ...rootEnvelope(store), ...store.envelope(item), text: input.text, needsPlanning: true });
+    }
     if (name === 'requirement') return result('queued', store.envelope(await store.upsertRequirement(input.requirement)));
     if (name === 'seed') {
       const seed = await store.upsertSeed(input.seed);
@@ -110,6 +114,10 @@ async function executeStage(name, input) {
   if (name === 'check-requirement-issue') {
     const checked = await requirementReview.check(store, id, claimId);
     return result(checked.outcome, store.envelope(checked.item, { github: checked.item.github ?? null, reason: checked.reason ?? null }));
+  }
+  if (name === 'intake-apply') {
+    const applied = await store.applyIntake(id, claimId, { requirement: input.requirement, seeds: input.seeds, reason: input.reason });
+    return result('complete', { ...rootEnvelope(store), ...store.envelope(applied.item), seeds: applied.created.map(seed => seed.id), skipped: applied.skipped, reason: input.reason ?? null });
   }
   if (name === 'revise-proposal') return result('complete', store.envelope(await store.reviseRequirement(id, claimId, input.proposal)));
   if (name === 'prepare') return result('complete', store.envelope(await worktrees.prepare(store, id, claimId)));

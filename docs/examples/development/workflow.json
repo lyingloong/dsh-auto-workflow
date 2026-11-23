@@ -31,6 +31,69 @@
       }
     },
     {
+      "id": "intake-record",
+      "type": "command",
+      "title": "Record raw intake",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs intake-record",
+        "json": true
+      }
+    },
+    {
+      "id": "busy-intake-record",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "intake-plan",
+      "type": "agent",
+      "title": "Plan intake",
+      "concurrency": 1,
+      "inputs": {
+        "dataRef": "$nodes.intake-record.output.dataRef",
+        "claimId": "$nodes.intake-record.output.claimId",
+        "dataRoot": "$nodes.intake-record.output.dataRoot",
+        "cwd": "$nodes.intake-record.output.cwd",
+        "text": "$nodes.intake-record.output.text"
+      },
+      "config": {
+        "cwd": ".cwd",
+        "reasoningEffort": "low",
+        "outcomes": [
+          "planned",
+          "unclear"
+        ],
+        "prompt": "Plan a broad user request into one concrete requirement and optional discovery directions. Read the raw request at input.text, the requirement queue under input.dataRoot/requirements, existing seeds, recent commits, tests, docs and relevant source in cwd. Decide whether the request is already concrete: if so, produce only the single requirement that should be implemented first. If it is broad, produce that same first concrete requirement plus 0-3 follow-up seeds that name genuinely separate work visible after the first delivery; each seed needs a title, concrete evidence locations and an acceptance direction. Deduplicate against existing requirements, seeds, branches and pull requests (when gh is available); skip anything already covered. Never start, claim or mint requirements from these seeds; they enter the normal rotation. Do not edit the repository or business store and do not invoke approval services. Return outcome planned with output {requirement:{title,description,risk:low|mid|high,tags:[]},seeds:[{title,evidence,tags:[],category}],reason}, or outcome unclear with output {reason}. Keep the requirement description factual and testable."
+      }
+    },
+    {
+      "id": "intake-apply",
+      "type": "command",
+      "title": "Persist intake plan",
+      "concurrency": 1,
+      "inputs": {
+        "dataRef": "$nodes.intake-record.output.dataRef",
+        "claimId": "$nodes.intake-record.output.claimId",
+        "requirement": "$prev.requirement",
+        "seeds": "$prev.seeds",
+        "reason": "$prev.reason"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs intake-apply",
+        "json": true
+      }
+    },
+    {
+      "id": "busy-intake-apply",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
       "id": "mine-gate",
       "type": "gate",
       "title": "Mining switch",
@@ -1175,6 +1238,46 @@
     {
       "from": "requirement-gate",
       "to": "check-requirement-issue",
+      "on": "complete"
+    },
+    {
+      "from": "intake-record",
+      "to": "intake-plan",
+      "on": "complete"
+    },
+    {
+      "from": "intake-record",
+      "to": "busy-intake-record",
+      "on": "busy"
+    },
+    {
+      "from": "busy-intake-record",
+      "to": "intake-record",
+      "on": "complete"
+    },
+    {
+      "from": "intake-plan",
+      "to": "intake-apply",
+      "on": "planned"
+    },
+    {
+      "from": "intake-plan",
+      "to": "intake-apply",
+      "on": "unclear"
+    },
+    {
+      "from": "intake-apply",
+      "to": "dispatch",
+      "on": "complete"
+    },
+    {
+      "from": "intake-apply",
+      "to": "busy-intake-apply",
+      "on": "busy"
+    },
+    {
+      "from": "busy-intake-apply",
+      "to": "intake-apply",
       "on": "complete"
     }
   ]

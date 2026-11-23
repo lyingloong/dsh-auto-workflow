@@ -125,6 +125,13 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.ok(graph.edges.some(edge => edge.from === 'check-requirement-issue' && edge.to === 'prepare' && edge.on === 'approved'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-requirement-issue' && edge.to === 'analyst-revise' && edge.on === 'rejected'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-requirement-issue' && edge.to === 'requirement-gate' && edge.on === 'waiting'));
+  assert.ok(graph.nodes.find(node => node.id === 'intake-record'));
+  assert.equal(graph.nodes.find(node => node.id === 'intake-plan').config.reasoningEffort, 'low');
+  assert.deepEqual(graph.nodes.find(node => node.id === 'intake-plan').config.outcomes, ['planned', 'unclear']);
+  assert.ok(graph.edges.some(edge => edge.from === 'intake-record' && edge.to === 'intake-plan' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'intake-plan' && edge.to === 'intake-apply' && edge.on === 'planned'));
+  assert.ok(graph.edges.some(edge => edge.from === 'intake-plan' && edge.to === 'intake-apply' && edge.on === 'unclear'));
+  assert.ok(graph.edges.some(edge => edge.from === 'intake-apply' && edge.to === 'dispatch' && edge.on === 'complete'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'pr-gate' && edge.on === 'waiting'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'self-merge-human' && edge.on === 'approval-needed'));
   assert.ok(graph.edges.some(edge => edge.from === 'self-merge-human' && edge.to === 'approve-self' && edge.on === 'approve'));
@@ -458,6 +465,99 @@ test('pr-init manual gate treats branch protection as a warning, not a hard gate
   const mergeCommit = manual.output.checks.find(check => check.id === 'merge-commit');
   assert.equal(mergeCommit.required, true);
   assert.equal(mergeCommit.ok, true);
+});
+
+test('intake records raw text, applies one plan, and dedupes derived seeds', async t => {
+  const { store } = await fixture(t);
+  const recorded = await cli('intake-record', { dataRoot: store.root, text: 'Add a dashboard page with docs updates' });
+  assert.equal(recorded.outcome, 'complete');
+  assert.equal(recorded.output.needsPlanning, true);
+  const intakeId = path.basename(recorded.output.dataRef, '.json');
+  assert.equal((await store.get(intakeId)).status, 'planning');
+  assert.equal((await store.get(intakeId)).needsPlanning, true);
+  // A raw intake is not claimable until its plan is applied.
+  assert.deepEqual(await store.claimBatch(3), []);
+  const applied = await cli('intake-apply', {
+    dataRef: recorded.output.dataRef,
+    claimId: recorded.output.claimId,
+    requirement: { title: 'Dashboard page', description: 'Ship a dashboard page with a loading state', risk: 'mid', tags: ['page'] },
+    seeds: [
+      { title: 'Document the dashboard', evidence: 'README lacks a dashboard section', tags: ['docs'] },
+      { title: 'Dashboard empty states', evidence: 'No empty/error states exist', tags: ['ux'] },
+    ],
+    reason: 'split from a broad request',
+  });
+  assert.equal(applied.outcome, 'complete');
+  assert.equal(applied.output.seeds.length, 2);
+  const item = await store.get(intakeId);
+  assert.equal(item.status, 'queued');
+  assert.equal(item.claimId, null);
+  assert.equal(item.needsPlanning, false);
+  assert.equal(item.title, 'Dashboard page');
+  const seeds = await store.readSeeds();
+  assert.ok(seeds.every(seed => seed.origin === 'user' && seed.relatedRequirementId === intakeId));
+  // A later intake proposing an existing direction skips it with a reason.
+  const second = await cli('intake-record', { dataRoot: store.root, text: 'Another broad request' });
+  const reused = await cli('intake-apply', {
+    dataRef: second.output.dataRef,
+    claimId: second.output.claimId,
+    requirement: { title: 'Another request', description: 'Different bounded work', risk: 'low' },
+    seeds: [{ title: 'Document the dashboard', evidence: 'duplicate direction' }],
+  });
+  assert.equal(reused.output.seeds.length, 0);
+  assert.equal(reused.output.skipped.length, 1);
+  assert.match(reused.output.skipped[0].reason, /same direction/);
+});
+
+test('an unclear intake keeps and queues the raw request', async t => {
+  const { store } = await fixture(t);
+  const recorded = await cli('intake-record', { dataRoot: store.root, text: 'maybe improve things a bit' });
+  const applied = await cli('intake-apply', {
+    dataRef: recorded.output.dataRef,
+    claimId: recorded.output.claimId,
+    requirement: null,
+    seeds: [],
+    reason: 'too vague to split safely',
+  });
+  assert.equal(applied.outcome, 'complete');
+  const item = await store.get(path.basename(recorded.output.dataRef, '.json'));
+  assert.equal(item.status, 'queued');
+  assert.equal(item.needsPlanning, false);
+  assert.match(item.description, /maybe improve things a bit/);
+  assert.equal(item.intakeReason, 'too vague to split safely');
+  assert.equal((await store.readSeeds()).length, 0);
+});
+
+test('the intake graph plans a broad request before dispatch claims it', async t => {
+  const { store, repo } = await fixture(t);
+  const raw = JSON.parse(await readFile(graphFile, 'utf8'));
+  for (const node of raw.nodes.filter(node => node.type === 'gate')) node.config.delayMs = 0;
+  raw.entry = 'intake-record';
+  const definition = normalizeDefinition(raw);
+  const artifacts = new Map(); let next = 0;
+  const io = { put: async value => { const ref = `ref-${++next}`; artifacts.set(ref, structuredClone(value)); return ref; }, get: async ref => structuredClone(artifacts.get(ref)), archive: async () => {} };
+  const state = await newRunState({ definition, cwd: repo, permissions: { command: { mode: 'allowlist', allow: ['node docs/examples/development/driver.mjs'] } }, input: { dataRoot: store.root, text: 'Add a dashboard page' } }, io);
+  let plannerCalls = 0;
+  const executors = {
+    command: async ({ node, input }) => stage(node.config.command.split(' ').at(-1), input),
+    agent: async ({ node, input }) => {
+      assert.equal(node.id, 'intake-plan');
+      plannerCalls += 1;
+      assert.equal(node.config.reasoningEffort, 'low');
+      assert.match(input.text, /dashboard/);
+      return { outcome: 'planned', output: { requirement: { title: 'Dashboard page', description: 'Ship the first dashboard view', risk: 'low' }, seeds: [{ title: 'Docs for the dashboard', evidence: 'README lacks dashboard documentation' }] } };
+    },
+  };
+  // Keep the newly queued requirement at the claim boundary so the test does not
+  // create worktrees for the whole engineering flow.
+  await run(state, executors, { io, maxSteps: 30, control: () => ({ nodes: { route: false } }) });
+  assert.equal(plannerCalls, 1);
+  const items = await store.list();
+  assert.equal(items.length, 1);
+  assert.equal(items[0].title, 'Dashboard page');
+  assert.equal(items[0].needsPlanning, false);
+  assert.ok(['intake', 'ready'].includes(items[0].status));
+  assert.ok((await store.readSeeds()).some(seed => seed.title === 'Docs for the dashboard' && seed.origin === 'user'));
 });
 
 test('a version 2 business store is rejected instead of reinterpreted in place', async t => {

@@ -123,10 +123,34 @@ node docs/examples/development/driver.mjs requirement
 
 **主会话 intake 协议（建议，不是强制工具流程）：**
 
-1. 用户提出需求时，先调用一次 `driver requirement`；
-2. 可选地再调用 0–3 次 `driver seed`，把需求相关但尚未成为需求的证据/相邻观察写入 seed 池；
+1. 宽泛请求投给图内 intake 入口 `intake-record`（见下）；已经具体的需求直接调用 `driver requirement`；
+2. 具体需求可选用 `driver seed` 补充 0–3 个证据 seed；
 3. seed 必须引用证据位置，不能只是复述需求；没有可靠材料就不写；
-4. 需要立即处理时再 enqueue 一次 `dispatch`，否则由 producer 下一轮领取。
+4. 需要立即处理时 enqueue 一次 `dispatch`，否则由 producer 下一轮领取。
+
+### 宽泛需求：图内 intake planner
+
+需求还很宽泛时（例如"论文速递：每天推送相关论文"），不要直接把它当作可执行需求，而是把原话投给图里的 intake 入口：
+
+```json
+{ "nodeId": "intake-record", "input": { "dataRoot": "C:/work/project-workflow-data", "text": "论文速递：每天推送相关论文" } }
+```
+
+流程：
+
+```
+intake-record（command，先落盘原文）→ intake-plan（agent，reasoningEffort: low）
+   ├─ planned → intake-apply（command，落盘需求 + 去重后的 seeds）
+   └─ unclear → intake-apply（command，保留原文）
+→ dispatch（领取需求，进入正常队列）
+```
+
+- `intake-record` 把原文写成 `status: planning` 的需求，不可被 claim，但计入 backlog，所以规划期间不会误触发挖掘。
+- `intake-plan` 读仓库、需求队列、已有 seed、分支和 PR（`gh` 可用时），只产出 **1 条具体需求 + 0–3 个后续方向**；节点显式设置低 reasoning effort，不固定 provider/model。
+- `intake-apply` 校验并落盘：需求补全后转 `queued`；派生 seed 使用 `origin=user` + `relatedRequirementId`，只进正常轮转，不会被自动开挖。
+- 去重：与已有 seed/需求归一化标题相同的方向会跳过，输出带 `reason`；PR/分支由 planner 在提示词里检查。
+- planner 返回 `unclear` 时保留原文并转为 `queued`，理由记在 `intakeReason`；模型执行失败则 packet 失败、原文仍是 `planning`，可重新投递 `intake-plan` 或直接投 `intake-apply` 并带 `requirement:null` 收口。
+- 入口是独立 packet，一个 run 内可以多次使用，不影响已有 producer。
 
 ### 已有证据 seed
 
