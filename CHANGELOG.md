@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 需求审批从看板移到业务仓库的 GitHub issue：mid/high 挖掘需求由 `publish-requirement-issue` 脱敏发布，`check-requirement-issue` 读取维护者评论（`@workflow approve` / `@workflow reject <理由>`，仅 OWNER / MEMBER / COLLABORATOR 生效），`requirement-gate` 每 30 分钟复查；决定按 revision 绑定，旧评论不会批准新内容。移除 `requirement-human` 与 `requirement-decision` 节点/命令；`pr-init` 增加三个需求审批标签的检查与创建。
 - `runner.updateModels` 的忙碌判定改为只看 `running`/`ready` token。v1.2.0 里"等待调度切片收尾"的写法会与调度锁互等，罕见情况下延迟 2 秒后仍然返回 409；现在与定义更新的守卫一致，parked 或无工作的收尾切片不再阻止改模型。
 
 ## v1.2.0 — 2026-11-23

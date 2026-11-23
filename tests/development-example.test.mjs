@@ -12,6 +12,7 @@ import { publish, ready, check, selfMerge, updateBody } from '../docs/examples/d
 import { stage } from '../docs/examples/development/driver.mjs';
 import { normalizeDefinition } from '../src/definition.mjs';
 import { newRunState, enqueue, run, decide, waitingHumanTokens } from '../src/runtime.mjs';
+import { useFakeGh } from './helpers/fake-gh-env.mjs';
 
 const execute = promisify(execFile);
 const driver = fileURLToPath(new URL('../docs/examples/development/driver.mjs', import.meta.url));
@@ -32,19 +33,7 @@ async function withPullRequestFixture(t, { root, repo }, { readyMerges = true } 
   await git(root, 'init', '--bare', remote);
   await git(repo, 'remote', 'add', 'origin', remote);
   await git(repo, 'push', '-u', 'origin', 'main');
-  const fakeGh = fileURLToPath(new URL('./fixtures/fake-gh.mjs', import.meta.url));
-  const state = path.join(root, 'fake-pr-state.json');
-  const previous = { DSH_GH_BIN: process.env.DSH_GH_BIN, DSH_GH_SCRIPT: process.env.DSH_GH_SCRIPT, DSH_FAKE_PR_STATE: process.env.DSH_FAKE_PR_STATE, DSH_FAKE_READY_MERGES: process.env.DSH_FAKE_READY_MERGES };
-  process.env.DSH_GH_BIN = process.execPath;
-  process.env.DSH_GH_SCRIPT = fakeGh;
-  process.env.DSH_FAKE_PR_STATE = state;
-  process.env.DSH_FAKE_READY_MERGES = readyMerges ? '1' : '0';
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-  });
-  return { remote, state, fakeGh };
+  return { remote, ...useFakeGh(t, root, { readyMerges }) };
 }
 const user = (id, extra = {}) => ({ id, source: 'user', title: id, description: `Implement ${id}`, risk: 'high', ...extra });
 const mined = (id, value = 'mid', extra = {}) => ({ id, source: 'mined', seedId: `seed-${id.slice(4)}`, title: id, description: `Mined ${id}`, risk: value, ...extra });
@@ -53,7 +42,7 @@ async function prepared(store, id = 'req-one', spec = user(id)) {
   const [envelope] = await store.claimBatch(1);
   assert.equal(envelope.dataRef, store.ref(id));
   const routed = await store.route(id, envelope.claimId);
-  if (routed.outcome === 'needs_approval') await store.requirementDecision(id, envelope.claimId, { decision: 'approve', actor: 'test-human', expectedRevision: routed.item.revision });
+  if (routed.outcome === 'needs_approval') await decideRequirement(store, id, envelope.claimId, 'approve');
   const ready = await prepare(store, id, envelope.claimId);
   const item = await store.beginEngineering(id, envelope.claimId, { expectedRevision: ready.revision, expectedEpoch: ready.engineeringEpoch });
   return { id, claimId: envelope.claimId, cwd: item.worktreePath, revision: item.revision, engineeringEpoch: item.engineeringEpoch };
@@ -76,6 +65,33 @@ async function cli(name, input) {
   const { stdout, stderr } = await execute(process.execPath, [driver, name], { env: { ...process.env, DSH_WORKFLOW_INPUT: JSON.stringify(input) }, windowsHide: true });
   assert.equal(stderr, ''); assert.equal(stdout.trim().split('\n').length, 1);
   return JSON.parse(stdout);
+}
+/** Record a requirement decision without GitHub by attaching a synthetic issue. */
+async function decideRequirement(store, id, claimId, decision, note) {
+  const item = await store.get(id);
+  if (!item.github) await store.attachIssue(id, claimId, { number: 1, url: 'https://example.invalid/issues/1', revision: item.revision, commentFloor: 0 });
+  return store.githubRequirementDecision(id, claimId, { decision, note, actor: 'test-human', expectedRevision: item.revision });
+}
+/** A mined mid-risk requirement parked in GitHub requirement review. */
+async function pendingReview(store) {
+  await store.upsertSeed({ id: 'seed-review', title: 'Review direction', evidence: 'Concrete local evidence' });
+  const [seed] = await store.claimSeeds(1);
+  const requirement = await store.proposeSeed({
+    seedId: 'seed-review', claimId: seed.claimId,
+    proposal: { title: 'Review me', description: 'Read C:\\Users\\private\\project and mail owner@example.com with ghp_abcdefghijklmnopqrstuvwxyz', risk: 'mid', priority: 2 },
+  });
+  const [claimed] = await store.claimBatch(1);
+  const routed = await store.route(requirement.id, claimed.claimId);
+  assert.equal(routed.outcome, 'needs_approval');
+  return { item: routed.item, envelope: store.envelope(routed.item) };
+}
+async function issueComment(statePath, number, body, association = 'OWNER') {
+  const state = JSON.parse(await readFile(statePath, 'utf8'));
+  const issue = state.issues.find(value => value.number === number);
+  assert.ok(issue, `review issue ${number}`);
+  issue.comments = issue.comments ?? [];
+  issue.comments.push({ id: state.nextComment++, body, user: { login: 'maintainer' }, author_association: association });
+  await writeFile(statePath, JSON.stringify(state));
 }
 
 test('development graph is generic: continuous detached producer, root 6, one three-slot engineering/review pool', async () => {
@@ -101,6 +117,14 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.ok(graph.edges.some(edge => edge.from === 'integration-route' && edge.to === 'ready-pr' && edge.on === 'pr'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'begin-engineering' && edge.on === 'closed'));
   assert.ok(graph.nodes.find(node => node.id === 'pr-gate').type === 'gate');
+  assert.equal(graph.nodes.find(node => node.id === 'publish-requirement-issue').concurrency, 1);
+  assert.equal(graph.nodes.find(node => node.id === 'check-requirement-issue').concurrency, 1);
+  assert.equal(graph.nodes.find(node => node.id === 'requirement-gate').config.delayMs, 1_800_000);
+  assert.ok(!graph.nodes.some(node => node.id === 'requirement-human'));
+  assert.ok(graph.edges.some(edge => edge.from === 'route' && edge.to === 'publish-requirement-issue' && edge.on === 'needs_approval'));
+  assert.ok(graph.edges.some(edge => edge.from === 'check-requirement-issue' && edge.to === 'prepare' && edge.on === 'approved'));
+  assert.ok(graph.edges.some(edge => edge.from === 'check-requirement-issue' && edge.to === 'analyst-revise' && edge.on === 'rejected'));
+  assert.ok(graph.edges.some(edge => edge.from === 'check-requirement-issue' && edge.to === 'requirement-gate' && edge.on === 'waiting'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'pr-gate' && edge.on === 'waiting'));
   assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'self-merge-human' && edge.on === 'approval-needed'));
   assert.ok(graph.edges.some(edge => edge.from === 'self-merge-human' && edge.to === 'approve-self' && edge.on === 'approve'));
@@ -147,14 +171,14 @@ test('user priority0 and low-risk mined bypass; mid/high human feedback revises 
     const routed = await store.route(id, envelope.claimId);
     if (id === 'req-user' || id === 'req-low') { assert.equal(routed.outcome, 'ready'); continue; }
     assert.equal(routed.outcome, 'needs_approval');
-    await assert.rejects(store.requirementDecision(id, envelope.claimId, { decision: 'reject', expectedRevision: 1 }), /feedback/);
-    await store.requirementDecision(id, envelope.claimId, { decision: 'reject', note: 'Bound the scope; preserve identity', expectedRevision: 1 });
+    await assert.rejects(decideRequirement(store, id, envelope.claimId, 'reject'), /feedback/);
+    await decideRequirement(store, id, envelope.claimId, 'reject', 'Bound the scope; preserve identity');
     await store.reviseRequirement(id, envelope.claimId, { expectedRevision: 1, title: 'Bounded scope', description: 'Narrow and testable', risk: 'mid' });
     const item = await store.get(id);
     assert.equal(item.id, id); assert.equal(item.revision, 2); assert.equal(item.claimId, envelope.claimId);
     assert.equal(item.feedback[0].note, 'Bound the scope; preserve identity');
     assert.equal((await store.route(id, envelope.claimId)).outcome, 'needs_approval');
-    await store.requirementDecision(id, envelope.claimId, { decision: 'approve', expectedRevision: 2 });
+    await decideRequirement(store, id, envelope.claimId, 'approve');
     assert.equal((await store.get(id)).requirementApproval.revision, 2);
   }
 });
@@ -532,17 +556,99 @@ test('after Human approval the workflow self-merges its PR when external merge d
   assert.equal(settled.lastOutcome, 'requirement-merged');
 });
 
-test('pr-init checks and safely creates the label and PR template', async t => {
+test('pr-init checks and safely creates the labels and PR template', async t => {
   const base = await fixture(t);
-  await withPullRequestFixture(t, base);
+  const { state } = await withPullRequestFixture(t, base);
   const before = await stage('pr-init', { repoRoot: base.repo, baseBranch: 'main' });
   assert.equal(before.outcome, 'blocked');
   assert.equal(before.output.checks.find(check => check.id === 'pr-template').ok, false);
+  assert.equal(before.output.checks.find(check => check.id === 'requirement-labels').ok, false);
   const applied = await stage('pr-init', { repoRoot: base.repo, baseBranch: 'main', apply: true });
   assert.equal(applied.outcome, 'complete');
+  assert.equal(applied.output.checks.find(check => check.id === 'requirement-labels').ok, true);
+  const fake = JSON.parse(await readFile(state, 'utf8'));
+  for (const label of ['workflow:merge-ready', 'workflow:requirement-review', 'workflow:requirement-approved', 'workflow:requirement-rejected']) assert.ok(fake.labels.includes(label), label);
   const template = await readFile(path.join(base.repo, '.github', 'pull_request_template.md'), 'utf8');
   assert.match(template, /^<!-- workflow/);
   assert.match(template, /stage=implementing/);
+});
+
+test('requirement review publishes one redacted issue and applies an authorized approval', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { item, envelope } = await pendingReview(base.store);
+  const published = await cli('publish-requirement-issue', envelope);
+  assert.equal(published.outcome, 'complete');
+  const number = published.output.github.number;
+  let fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues.length, 1);
+  const issue = fake.issues[0];
+  assert.match(issue.title, /Review me/);
+  assert.match(issue.body, /workflow-requirement/);
+  assert.doesNotMatch(issue.body, /C:\\Users/);
+  assert.doesNotMatch(issue.body, /owner@example\.com/);
+  assert.doesNotMatch(issue.body, /ghp_/);
+  assert.deepEqual(issue.labels, ['workflow:requirement-review']);
+  // Republishing the same revision updates that issue instead of opening another.
+  await cli('publish-requirement-issue', envelope);
+  assert.equal(JSON.parse(await readFile(state, 'utf8')).issues.length, 1);
+  // Unauthorized or unparsable comments never decide.
+  await issueComment(state, number, '@workflow approve', 'NONE');
+  assert.equal((await cli('check-requirement-issue', envelope)).outcome, 'waiting');
+  await issueComment(state, number, '@workflow maybe');
+  assert.equal((await cli('check-requirement-issue', envelope)).outcome, 'waiting');
+  assert.equal((await base.store.get(item.id)).status, 'requirement-pending');
+  // An authorized approval applies to the stamped revision.
+  await issueComment(state, number, '@workflow approve');
+  const approved = await cli('check-requirement-issue', envelope);
+  assert.equal(approved.outcome, 'approved');
+  assert.equal((await base.store.get(item.id)).status, 'ready');
+  fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues[0].state, 'CLOSED');
+  assert.ok(fake.issues[0].labels.includes('workflow:requirement-approved'));
+  assert.ok(!fake.issues[0].labels.includes('workflow:requirement-review'));
+});
+
+test('requirement review rejects with a reason and reopens the same issue for a new revision', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { item, envelope } = await pendingReview(base.store);
+  const published = await cli('publish-requirement-issue', envelope);
+  const number = published.output.github.number;
+  // A reject without a reason is refused and asks for one.
+  await issueComment(state, number, '@workflow reject');
+  const nagged = await cli('check-requirement-issue', envelope);
+  assert.equal(nagged.outcome, 'waiting');
+  assert.equal(nagged.output.reason, 'missing-rejection-reason');
+  assert.match(JSON.parse(await readFile(state, 'utf8')).issues[0].comments.at(-1).body, /需要一句理由/);
+  assert.equal((await base.store.get(item.id)).status, 'requirement-pending');
+  // A reasoned reject returns the requirement for revision.
+  await issueComment(state, number, '@workflow reject 与已有需求重复', 'MEMBER');
+  const rejected = await cli('check-requirement-issue', envelope);
+  assert.equal(rejected.outcome, 'rejected');
+  let current = await base.store.get(item.id);
+  assert.equal(current.status, 'requirement-revision');
+  assert.equal(current.requirementApproval.decision, 'reject');
+  assert.equal(current.requirementApproval.actor, 'github:maintainer');
+  // The analyst revises the same id; its route republishes revision 2 on the same issue.
+  await base.store.reviseRequirement(item.id, item.claimId, { expectedRevision: current.revision, title: 'Review me v2', description: 'Narrowed change', risk: 'mid', tags: ['user'] });
+  const rerouted = await base.store.route(item.id, item.claimId);
+  assert.equal(rerouted.outcome, 'needs_approval');
+  const republished = await cli('publish-requirement-issue', base.store.envelope(rerouted.item));
+  assert.equal(republished.output.github.number, number);
+  const fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues[0].state, 'OPEN');
+  assert.ok(fake.issues[0].labels.includes('workflow:requirement-review'));
+  assert.ok(!fake.issues[0].labels.includes('workflow:requirement-rejected'));
+  // The earlier reject comment is below the refreshed comment floor.
+  assert.equal((await cli('check-requirement-issue', base.store.envelope(rerouted.item))).outcome, 'waiting');
+  // A fresh approval for revision 2 is accepted.
+  await issueComment(state, number, '@workflow approve');
+  const approved = await cli('check-requirement-issue', base.store.envelope(rerouted.item));
+  assert.equal(approved.outcome, 'approved');
+  const merged = await base.store.get(item.id);
+  assert.equal(merged.revision, 2);
+  assert.equal(merged.status, 'ready');
 });
 
 test('PR protocol blocks merge-ready on failing CI or unresolved review threads', async t => {

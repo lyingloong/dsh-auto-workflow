@@ -11,7 +11,7 @@
 已有 seed → producer / miner ──┴→ 稳定 ID 需求队列
   → 用户优先、priority、FIFO、ID 的确定性准入
   → 用户 / 挖掘 low：直接进入开发
-    挖掘 mid/high：Human 需求审批；拒绝反馈 → 同 ID 修订 → 再评估
+    挖掘 mid/high：GitHub issue 需求审批（维护者评论 @workflow approve/reject）；拒绝反馈 → 同 ID 修订 → 再评估
   → 每需求一个 auto/req-* 分支 + attached worktree
   → begin-engineering → engineer 池（最多 3）
   → snapshot：整个分支压成单 commit，冻结 revision/epoch/commit/tree
@@ -34,7 +34,7 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 ## 输入来源与持续 producer
 
 - **用户需求**只由获得授权的 intake 调用写入。优先级强制为 `0`，即使风险为 high 也跳过“需求是否开展”的审批；仍必须通过实现 review 与 Human merge 门禁。
-- **挖掘需求**来自事先提供的真实证据 seed，优先级为 `1..9`。low 跳过需求审批，mid/high 必须人工决定。没有 seed 就不调用挖掘模型；无可行动建议的 seed 回到轮转队列并记下原因，不凭空制造需求，也不会被永久挂起。初始化会写入一组可选的 baseline discovery seeds（docs、refactor、page、chore、tests、dependency 等），它们只是发现方向，不是证据；miner 找不到具体问题仍应返回 idle。seed 的公平性按轮转位置 `rotationRound` 排序（从未挖过的优先，其次最久未挖），不使用时间冷却；`proposal:null` 保留原轮次，需求 merged/rejected 后其 seed 以新的轮转位置重新入队。同一方向的重复提案在前一个需求 settle 后使用 `req-<seed>-r<n>` 后缀，不会覆盖已终止的需求。
+- **挖掘需求**来自事先提供的真实证据 seed，优先级为 `1..9`。low 跳过需求审批，mid/high 在业务仓库的审批 issue 上由维护者评论决定：`@workflow approve` 或 `@workflow reject <理由>`，只有 OWNER / MEMBER / COLLABORATOR 生效，拒绝必须带理由。issue 发布前先做确定性脱敏（路径、邮箱、令牌、私有地址），首查立即执行、之后每 30 分钟复查。没有 seed 就不调用挖掘模型；无可行动建议的 seed 回到轮转队列并记下原因，不凭空制造需求，也不会被永久挂起。初始化会写入一组可选的 baseline discovery seeds（docs、refactor、page、chore、tests、dependency 等），它们只是发现方向，不是证据；miner 找不到具体问题仍应返回 idle。seed 的公平性按轮转位置 `rotationRound` 排序（从未挖过的优先，其次最久未挖），不使用时间冷却；`proposal:null` 保留原轮次，需求 merged/rejected 后其 seed 以新的轮转位置重新入队。同一方向的重复提案在前一个需求 settle 后使用 `req-<seed>-r<n>` 后缀，不会覆盖已终止的需求。
 - 默认 `dispatch` 只准入有限批次。要持续处理，在同一 run 中显式向 `mine-gate` enqueue **一个** producer。它每轮经 60 秒 gate、backlog 水位检查、seed claim、detached miner packet、队列 dispatch、detached 需求 packet 后返回 gate。`backlog = 待实现需求（含 engineering）+ 正在 mining 的 seed`，达到工程师并发数 3 即只 dispatch 已有队列；`seed-batch` 只领剩余余额并受 `maxMiningSeeds` 限制。中断后留在 `mining` 的 claim 由 `driver status` 报出，只能显式 `recover-seeds` 释放，运行时不自动回收。
 - 慢模型和 Human 等待不会牵住 detached producer。后续 seed 与用户需求可以继续写入；需要即时处理时可 enqueue 有限 `dispatch`，不要重复启动 producer。
 - 优先级作用于业务队列的 claim；不抢占已经领取/执行的工作，也不承诺重排引擎中已经排队的 token。
@@ -46,7 +46,7 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 | 稳定 ID | 一项需求一个 ID 和绝对 `dataRef`；需求 ID、seed ID、packet ID、引擎 artifact ID 各自独立。 |
 | 同 ID 更新 | 仅 queued 项可 intake upsert，要求当前 `expectedRevision`，保留原 FIFO 顺序；active 项走反馈路径，不可覆盖。 |
 | 单一分支/worktree | 每项保存 `auto/req-*`、`worktreePath` 和 `baseRevision`；worktree attached 到该分支。snapshot 压成单 commit，PR head 精确绑定它。返修、拒绝、停止、冲突不删除它。 |
-| 需求审批绑定 | Human 需求响应绑定当时冻结的 `expectedRevision`，不能批准后来已修订的规格。 |
+| 需求审批绑定 | GitHub issue 上的决定只对发布时冻结的 `revision` 生效；发布后新增的评论才计入，旧 revision 的评论不能批准新规格。 |
 | 工程轮次绑定 | `begin-engineering` 消耗上轮 admission 并增加 `engineeringEpoch`；snapshot 校验冻结的 revision + epoch，拒绝旧轮响应。长期 `claimId` 不是单轮能力凭证。 |
 | 不可变实现与 review | 每轮实现、审查都是新记录；review/merge approval 绑定精确需求 revision、artifact 和 commit。脏 worktree 或改变的 HEAD 会阻止继续。 |
 | typed busy | 只有 10 秒内未获得业务锁、受保护操作尚未开始时，才产生 `BusinessBusy`。driver 返回 `busy` 和原解析输入，图经 1 秒 gate 只重试该命令；不重跑前面的模型或不确定副作用。 |

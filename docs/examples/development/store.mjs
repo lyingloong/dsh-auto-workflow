@@ -197,6 +197,7 @@ export class DevelopmentStore {
       worktreePath: previous?.worktreePath ?? null,
       baseRevision: previous?.baseRevision ?? null, implementation: previous?.implementation ?? null,
       reviews: previous?.reviews ?? [], feedback: previous?.feedback ?? [],
+      github: previous?.github ?? null,
       requirementApproval: null, approval: null, claimId: null, engineeringEpoch: 0, pendingSnapshot: null,
     };
     // Requirement revisions retain the same branch and attached worktree.
@@ -434,14 +435,47 @@ export class DevelopmentStore {
       item.status = 'requirement-pending'; return { item, outcome: 'needs_approval' };
     });
   }
-  async requirementDecision(id, claimId, { decision, note, actor = 'human', expectedRevision }) {
+  /** Attach the one review issue for this revision and the comment window that counts. */
+  async attachIssue(id, claimId, { number, url, revision, commentFloor }) {
+    return this.mutate(id, claimId, item => {
+      if (item.status !== 'requirement-pending') throw new Error('Requirement is not pending review');
+      if (!Number.isSafeInteger(number) || number < 1) throw new Error('Invalid review issue number');
+      text(url, 'review issue url', 500);
+      if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Invalid review revision');
+      if (!Number.isSafeInteger(commentFloor) || commentFloor < 0) throw new Error('Invalid review comment floor');
+      item.github = {
+        number, url, revision, commentFloor,
+        publishedAt: new Date().toISOString(),
+        state: 'awaiting', decidedAt: null, decidedRevision: null, actor: null, commentId: null, note: null,
+      };
+    });
+  }
+  async advanceIssueFloor(id, claimId, commentFloor) {
+    return this.mutate(id, claimId, item => {
+      if (!item.github) throw new Error('Requirement has no review issue');
+      if (!Number.isSafeInteger(commentFloor) || commentFloor < 0) throw new Error('Invalid review comment floor');
+      item.github = { ...item.github, commentFloor };
+    });
+  }
+  /** Apply a decision read from the review issue; the local store stays authoritative. */
+  async githubRequirementDecision(id, claimId, { decision, note, actor, commentId, expectedRevision }) {
     return this.mutate(id, claimId, item => {
       if (expectedRevision !== item.revision) throw new Error('Stale requirement approval revision');
       if (item.status !== 'requirement-pending' || !['approve', 'reject'].includes(decision)) throw new Error('No matching requirement approval pending');
+      if (!item.github) throw new Error('Requirement has no review issue');
       if (decision === 'reject') text(note, 'rejection feedback');
       item.requirementApproval = { decision, revision: item.revision, note: note ?? '', actor: text(actor, 'actor', 200) };
       if (decision === 'reject') item.feedback.push({ scope: 'requirement', revision: item.revision, note });
       item.status = decision === 'approve' ? 'ready' : 'requirement-revision';
+      item.github = {
+        ...item.github,
+        state: decision === 'approve' ? 'approved' : 'rejected',
+        decidedAt: new Date().toISOString(),
+        decidedRevision: item.revision,
+        actor: text(actor, 'actor', 200),
+        commentId: Number.isSafeInteger(commentId) ? commentId : null,
+        note: note ?? null,
+      };
     });
   }
   async reviseRequirement(id, claimId, proposal) {

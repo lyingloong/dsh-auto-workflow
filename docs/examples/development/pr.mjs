@@ -2,38 +2,15 @@
  * module only pushes the requirement branch, opens/updates its one draft PR,
  * polls that exact PR, and verifies an external merge. It never merges. */
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { git, checkedWorktree, targetReady, checkApproval, ancestor, commitId, clean } from './worktrees.mjs';
+import { gh, ghJson, repoCoordinates } from './github.mjs';
+import { REVIEW_LABEL, APPROVED_LABEL, REJECTED_LABEL, REQUIREMENT_LABELS } from './requirement-review.mjs';
 
-const execute = promisify(execFile);
 const PR_FIELDS = 'number,url,state,isDraft,headRefOid,mergeCommit,mergedAt,closed,reviewDecision,body,statusCheckRollup,comments,reviews';
 const STAGES = new Set(['implementing', 'verifying', 'reviewing', 'repairing', 'merge-ready', 'blocked']);
 const MERGE_LABEL = 'workflow:merge-ready';
 const TEMPLATE_PATH = '.github/pull_request_template.md';
-
-async function gh(cwd, ...args) {
-  const bin = process.env.DSH_GH_BIN || 'gh';
-  const prefix = process.env.DSH_GH_SCRIPT ? [process.env.DSH_GH_SCRIPT] : [];
-  try {
-    const result = await execute(bin, [...prefix, ...args], {
-      cwd,
-      windowsHide: true,
-      maxBuffer: 1024 * 1024,
-      env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
-    });
-    return result.stdout.trim();
-  } catch (error) {
-    throw new Error(`GitHub PR command failed: gh ${args.join(' ')}: ${String(error.stderr ?? error.message).slice(0, 1500)}`);
-  }
-}
-
-async function ghJson(cwd, args) {
-  const output = await gh(cwd, ...args);
-  try { return JSON.parse(output); }
-  catch { throw new Error(`GitHub PR command returned non-JSON for gh ${args.join(' ')}`); }
-}
 
 async function viewPr(store, number) {
   return ghJson(store.config.repoRoot, ['pr', 'view', String(number), '--json', PR_FIELDS]);
@@ -161,13 +138,6 @@ function basicBody(item) {
 
 function prBody(item, state = protocolFor(item)) {
   return protocolBody(item.brief?.markdown || basicBody(item), state);
-}
-
-async function repoCoordinates(store) {
-  const value = await ghJson(store.config.repoRoot, ['repo', 'view', '--json', 'nameWithOwner']);
-  const [owner, name] = String(value.nameWithOwner ?? '').split('/');
-  if (!owner || !name) throw new Error('Cannot resolve GitHub repository owner/name');
-  return { owner, name };
 }
 
 async function unresolvedThreads(store, number) {
@@ -484,13 +454,25 @@ export async function initPr(store, { apply = false, manualGate = false } = {}) 
     add('required-checks', false, 'branch protection not configured', !manualGate);
   }
 
-  let label = false;
-  try {
-    const { owner, name } = await repoCoordinates(store);
-    await ghJson(repo, ['api', `repos/${owner}/${name}/labels/${encodeURIComponent(MERGE_LABEL)}`]);
-    label = true;
-  } catch { label = false; }
-  add('merge-label', label, label ? MERGE_LABEL : `run with apply=true to create ${MERGE_LABEL}`);
+  const labels = [
+    { name: MERGE_LABEL, color: '0E8A16', description: 'Verified by dsh-auto-workflow' },
+    { name: REVIEW_LABEL, color: 'FBCA04', description: 'Requirement waiting for a maintainer decision' },
+    { name: APPROVED_LABEL, color: '0E8A16', description: 'Requirement review approved' },
+    { name: REJECTED_LABEL, color: 'B60205', description: 'Requirement review rejected' },
+  ];
+  let coordinates = null;
+  try { coordinates = await repoCoordinates(store); } catch { coordinates = null; }
+  const missing = [];
+  if (coordinates) {
+    for (const label of labels) {
+      try { await ghJson(repo, ['api', `repos/${coordinates.owner}/${coordinates.name}/labels/${encodeURIComponent(label.name)}`]); }
+      catch { missing.push(label); }
+    }
+  }
+  const mergeMissing = missing.some(label => label.name === MERGE_LABEL);
+  const requirementMissing = missing.filter(label => REQUIREMENT_LABELS.includes(label.name));
+  add('merge-label', Boolean(coordinates) && !mergeMissing, !coordinates ? 'repository coordinates unavailable' : mergeMissing ? `run with apply=true to create ${MERGE_LABEL}` : MERGE_LABEL);
+  add('requirement-labels', Boolean(coordinates) && requirementMissing.length === 0, !coordinates ? 'repository coordinates unavailable' : requirementMissing.length ? `run with apply=true to create ${requirementMissing.map(label => label.name).join(', ')}` : REQUIREMENT_LABELS.join(', '));
 
   const templatePath = path.join(repo, TEMPLATE_PATH);
   let template = '';
@@ -499,11 +481,13 @@ export async function initPr(store, { apply = false, manualGate = false } = {}) 
   add('pr-template', hasBlock, hasBlock ? TEMPLATE_PATH : `missing state block in ${TEMPLATE_PATH}`);
 
   if (apply) {
-    if (!label) {
-      await gh(repo, 'label', 'create', MERGE_LABEL, '--color', '0E8A16', '--description', 'Verified by dsh-auto-workflow', '--force');
-      const item = checks.find(check => check.id === 'merge-label');
-      if (item) { item.ok = true; item.detail = `created ${MERGE_LABEL}`; }
-      add('apply-merge-label', true, `created ${MERGE_LABEL}`, false);
+    if (missing.length > 0) {
+      for (const label of missing) await gh(repo, 'label', 'create', label.name, '--color', label.color, '--description', label.description, '--force');
+      for (const id of ['merge-label', 'requirement-labels']) {
+        const item = checks.find(check => check.id === id);
+        if (item) { item.ok = true; item.detail = 'labels created or verified'; }
+      }
+      for (const label of missing) add(`apply-label:${label.name}`, true, `created ${label.name}`, false);
     }
     if (!hasBlock) {
       const current = await readFile(templatePath, 'utf8').catch(() => null);

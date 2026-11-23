@@ -44,7 +44,7 @@ flowchart TD
   M --> Q
   Q --> R{需求来源与风险}
   R -->|用户 / 挖掘 low| W[每需求一个 auto/req-* 分支和 attached worktree]
-  R -->|挖掘 mid / high| H[Human 需求审批]
+  R -->|挖掘 mid / high| H[GitHub issue 需求审批]
   H -->|approve| W
   H -->|reject + 反馈| A[同 ID 修订需求]
   A --> R

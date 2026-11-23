@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { DevelopmentStore, BusinessBusy, absolute, seedId } from './store.mjs';
 import * as worktrees from './worktrees.mjs';
 import * as pullRequests from './pr.mjs';
+import * as requirementReview from './requirement-review.mjs';
 
 export async function stage(name, input) {
   try { return await executeStage(name, input); }
@@ -102,9 +103,13 @@ async function executeStage(name, input) {
     const routed = await store.route(id, claimId);
     return result(routed.outcome, store.envelope(routed.item));
   }
-  if (name === 'requirement-decision') {
-    const item = await store.requirementDecision(id, claimId, input);
-    return result(input.decision === 'approve' ? 'ready' : 'revise', store.envelope(item));
+  if (name === 'publish-requirement-issue') {
+    const published = await requirementReview.publish(store, id, claimId);
+    return result('complete', store.envelope(published.item, { github: published.item.github }));
+  }
+  if (name === 'check-requirement-issue') {
+    const checked = await requirementReview.check(store, id, claimId);
+    return result(checked.outcome, store.envelope(checked.item, { github: checked.item.github ?? null, reason: checked.reason ?? null }));
   }
   if (name === 'revise-proposal') return result('complete', store.envelope(await store.reviseRequirement(id, claimId, input.proposal)));
   if (name === 'prepare') return result('complete', store.envelope(await worktrees.prepare(store, id, claimId)));

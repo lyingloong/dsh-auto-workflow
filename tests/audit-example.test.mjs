@@ -15,6 +15,7 @@ import { stage } from '../docs/examples/development/driver.mjs';
 import { normalizeDefinition } from '../src/definition.mjs';
 import { newRunState, enqueue, run, decide, waitingHumanTokens } from '../src/runtime.mjs';
 import { createExecutors } from '../src/executors.mjs';
+import { useFakeGh } from './helpers/fake-gh-env.mjs';
 
 const example = fileURLToPath(new URL('../docs/examples/development/', import.meta.url));
 async function fixture(t, { materialize = false } = {}) {
@@ -76,8 +77,11 @@ function memoryIO() {
 }
 async function graphFixture(t, reply) {
   const fixtureValue = await fixture(t, { materialize: true });
+  const { state: ghState } = useFakeGh(t, fixtureValue.root);
   const raw = JSON.parse(await readFile(path.join(example, 'workflow.json'), 'utf8'));
-  for (const node of raw.nodes.filter(node => node.type === 'gate')) node.config.delayMs = 0; // Scheduling only; no node/edge removed.
+  // Scheduling only; no node/edge removed. The requirement poll keeps a small
+  // delay so a waiting review parks instead of spinning the slice budget.
+  for (const node of raw.nodes.filter(node => node.type === 'gate')) node.config.delayMs = node.id === 'requirement-gate' ? 10 : 0;
   const definition = normalizeDefinition(raw), io = memoryIO();
   const state = await newRunState({ definition, cwd: fixtureValue.repo, permissions: {
     command: { mode: 'allowlist', allow: ['node docs/examples/development/driver.mjs'] },
@@ -93,7 +97,15 @@ async function graphFixture(t, reply) {
       return { childId: `audit-child-${calls.length}`, result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(answer) }] }), dispose: async () => {} };
     },
   } : null } });
-  return { ...fixtureValue, definition, io, state, executors, calls };
+  return { ...fixtureValue, definition, io, state, executors, calls, ghState };
+}
+async function issueComment(statePath, number, body, association = 'OWNER') {
+  const fake = JSON.parse(await readFile(statePath, 'utf8'));
+  const issue = fake.issues.find(value => value.number === number);
+  assert.ok(issue, `review issue ${number}`);
+  issue.comments = issue.comments ?? [];
+  issue.comments.push({ id: fake.nextComment++, body, user: { login: 'audit-maintainer' }, author_association: association });
+  await writeFile(statePath, JSON.stringify(fake));
 }
 async function engineerReply({ input, calls }) {
   const round = calls.filter(call => call.nodeId === 'engineer').length;
@@ -136,11 +148,30 @@ test('audit coverage: complete production graph uses real command executor + mod
     await decide(fx.state, { tokenId: token.id, outcome, output: { note, actor: 'audit-human' } }, fx.io);
     await runSlice();
   };
-  await runSlice();
+  // Requirement review parks on a gate, so advance in small slices until the
+  // expected state; a full slice would spend its budget re-polling the issue.
+  const runSteps = steps => run(fx.state, fx.executors, { io: fx.io, control: () => ({ nodes: { 'mine-gate': producerEnabled } }), maxSteps: steps });
+  const waitFor = async (predicate, budget = 80) => {
+    for (let attempt = 0; attempt < budget; attempt += 1) {
+      if (await predicate()) return;
+      await runSteps(6);
+      await delay(20);
+    }
+    throw new Error(`condition not reached: ${JSON.stringify(fx.state.tokens.filter(token => token.status !== 'completed').map(token => `${token.nodeId}:${token.status}`))}`);
+  };
+  const requirementDecision = async (action, note) => {
+    const current = await fx.store.get('req-audit');
+    assert.ok(current.github?.number, 'requirement review issue published');
+    await issueComment(fx.ghState, current.github.number, `@workflow ${action}${note ? ` ${note}` : ''}`);
+    await delay(40);
+  };
+  const requirementNow = async () => { try { return await fx.store.get('req-audit'); } catch { return null; } };
+  await waitFor(async () => Boolean((await requirementNow())?.github?.number), 60);
   assert.equal((await fx.store.get('req-audit')).status, 'requirement-pending');
-  await choose('requirement-human', 'reject', 'Keep identity; narrow scope');
-  assert.equal((await fx.store.get('req-audit')).revision, 2);
-  await choose('requirement-human', 'approve', 'Approve revised requirement');
+  await requirementDecision('reject', 'Keep identity; narrow scope');
+  await waitFor(async () => { const current = await requirementNow(); return Boolean(current && current.revision === 2 && current.github?.revision === 2); });
+  await requirementDecision('approve', 'Approve revised requirement');
+  await waitFor(async () => waitingHumanTokens(fx.state).some(token => token.nodeId === 'merge-human'), 120);
   const before = await fx.store.get('req-audit');
   assert.equal(before.status, 'human-pending');
   assert.equal(before.reviews.length, 2);
@@ -210,20 +241,28 @@ test('audit regression: more than three valid revisions persist every review and
 });
 
 test('audit regression: old requirement approval cannot approve a newer revision under the same claim', async t => {
-  const { store } = await fixture(t);
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { store } = base;
   const id = 'req-stale';
   await store.upsertRequirement(requirement(id, { source: 'mined', seedId: 'seed-stale', risk: 'mid' }));
   const [envelope] = await store.claimBatch(1);
   await stage('route', envelope);
-  const obsoleteApproval = { ...envelope, expectedRevision: 1, decision: 'approve', actor: 'human-reviewed-r1' };
-  await stage('requirement-decision', { ...envelope, expectedRevision: 1, decision: 'reject', note: 'Narrow scope' });
-  await stage('revise-proposal', { ...envelope, proposal: { expectedRevision: 1, title: 'Changed scope', description: 'Revision two not seen by old approver', risk: 'high' } });
+  const published = await stage('publish-requirement-issue', envelope);
+  const number = published.output.github.number;
+  await issueComment(state, number, '@workflow reject Narrow scope');
+  assert.equal((await stage('check-requirement-issue', envelope)).outcome, 'rejected');
+  await stage('revise-proposal', { ...envelope, proposal: { expectedRevision: 1, title: 'Changed scope', description: 'Revision two not seen by the old approver', risk: 'high' } });
   await stage('route', envelope);
   assert.equal((await store.get(id)).revision, 2);
-  await assert.rejects(stage('requirement-decision', obsoleteApproval), /Stale requirement approval revision/);
+  // A decision stamped with revision 1 cannot approve revision 2.
+  await assert.rejects(store.githubRequirementDecision(id, envelope.claimId, { decision: 'approve', actor: 'github:old-approver', expectedRevision: 1 }), /Stale requirement approval revision/);
   assert.equal((await store.get(id)).status, 'requirement-pending');
   assert.equal((await store.get(id)).requirementApproval, null);
-  await stage('requirement-decision', { ...obsoleteApproval, expectedRevision: 2, actor: 'human-reviewed-r2' });
+  // Re-publishing revision 2 accepts a fresh decision only.
+  const republished = await stage('publish-requirement-issue', envelope);
+  await issueComment(state, republished.output.github.number, '@workflow approve');
+  assert.equal((await stage('check-requirement-issue', envelope)).outcome, 'approved');
   assert.equal((await store.get(id)).requirementApproval.revision, 2);
 });
 

@@ -6,11 +6,17 @@ import { execFileSync } from 'node:child_process';
 const args = process.argv.slice(2);
 const statePath = process.env.DSH_FAKE_PR_STATE;
 const cwd = process.cwd();
-const empty = () => ({ next: 1, prs: [] });
+const empty = () => ({ next: 1, prs: [], issues: [], labels: [], nextIssue: 1, nextComment: 1 });
 const read = () => existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : empty();
 const write = value => writeFileSync(statePath, JSON.stringify(value));
 const valueAfter = flag => { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : null; };
 const valuesAfter = flag => args.reduce((out, value, index) => value === flag && index + 1 < args.length ? [...out, args[index + 1]] : out, []);
+const bodyOf = () => {
+  const file = valueAfter('--body-file');
+  if (file) return readFileSync(file, 'utf8');
+  return valueAfter('--body') ?? '';
+};
+const issueByNumber = (state, number) => state.issues.find(issue => issue.number === Number(number)) ?? null;
 const find = (state, reference) => {
   if (/^\d+$/.test(String(reference))) return state.prs.find(pr => pr.number === Number(reference)) ?? null;
   const match = String(reference).match(/\/pull\/(\d+)/);
@@ -50,12 +56,28 @@ if (args[0] === 'api' && args[1] === 'graphql') {
   process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes } } } } }));
   process.exit(0);
 }
-if (args[0] === 'label') {
-  process.stdout.write('');
+if (args[0] === 'label' && args[1] === 'create') {
+  const state = read();
+  const name = args[2];
+  state.labels = state.labels ?? [];
+  if (!state.labels.includes(name)) state.labels.push(name);
+  write(state);
+  process.stdout.write(name);
   process.exit(0);
 }
-if (args[0] === 'api' && /\/labels\/workflow%3Amerge-ready$/.test(args[1] ?? '')) {
-  process.stdout.write(JSON.stringify({ name: 'workflow:merge-ready' }));
+if (args[0] === 'api' && /\/labels\/[^/]+$/.test(args[1] ?? '')) {
+  const state = read();
+  const name = decodeURIComponent(String(args[1]).split('/').at(-1));
+  if (!(state.labels ?? []).includes(name)) fail(`label not found: ${name}`);
+  process.stdout.write(JSON.stringify({ name }));
+  process.exit(0);
+}
+if (args[0] === 'api' && /\/issues\/\d+\/comments(\?.*)?$/.test(args[1] ?? '')) {
+  const state = read();
+  const number = Number(String(args[1]).match(/\/issues\/(\d+)\/comments/)[1]);
+  const issue = issueByNumber(state, number);
+  if (!issue) fail('no fake issue');
+  process.stdout.write(JSON.stringify(issue.comments ?? []));
   process.exit(0);
 }
 if (args[0] === 'api' && /\/protection$/.test(args[1] ?? '')) {
@@ -66,6 +88,46 @@ if (args[0] === 'api' && /\/protection$/.test(args[1] ?? '')) {
 }
 if (args[0] === 'api' && /repos\/example\/repo$/.test(args[1] ?? '')) {
   process.stdout.write(JSON.stringify({ full_name: 'example/repo', allow_merge_commit: true, allow_squash_merge: false, allow_rebase_merge: false }));
+  process.exit(0);
+}
+if (args[0] === 'issue') {
+  const state = read();
+  const command = args[1];
+  if (command === 'create') {
+    const issue = {
+      number: state.nextIssue, url: `https://example.invalid/issues/${state.nextIssue}`,
+      title: valueAfter('--title') ?? '', body: bodyOf(), state: 'OPEN',
+      labels: valuesAfter('--label'), comments: [],
+    };
+    state.nextIssue++; state.issues.push(issue); write(state);
+    process.stdout.write(issue.url);
+  } else if (command === 'view') {
+    const issue = issueByNumber(state, args[2]);
+    if (!issue) fail('no fake issue');
+    process.stdout.write(JSON.stringify({ number: issue.number, url: issue.url, title: issue.title, body: issue.body, state: issue.state, labels: issue.labels.map(name => ({ name })) }));
+  } else if (command === 'edit') {
+    const issue = issueByNumber(state, args[2]);
+    if (!issue) fail('no fake issue');
+    if (valueAfter('--title') !== null) issue.title = valueAfter('--title');
+    if (args.includes('--body-file') || args.includes('--body')) issue.body = bodyOf();
+    issue.labels = issue.labels ?? [];
+    for (const label of valuesAfter('--add-label')) if (!issue.labels.includes(label)) issue.labels.push(label);
+    for (const label of valuesAfter('--remove-label')) issue.labels = issue.labels.filter(value => value !== label);
+    write(state);
+  } else if (command === 'close' || command === 'reopen') {
+    const issue = issueByNumber(state, args[2]);
+    if (!issue) fail('no fake issue');
+    issue.state = command === 'close' ? 'CLOSED' : 'OPEN';
+    write(state);
+  } else if (command === 'comment') {
+    const issue = issueByNumber(state, args[2]);
+    if (!issue) fail('no fake issue');
+    issue.comments = issue.comments ?? [];
+    issue.comments.push({ id: state.nextComment, body: bodyOf(), user: { login: 'fake-workflow' }, author_association: 'OWNER', created_at: new Date().toISOString() });
+    state.nextComment++; write(state);
+  } else {
+    fail(`unsupported issue command: ${args.join(' ')}`);
+  }
   process.exit(0);
 }
 if (args[0] !== 'pr') fail(`unsupported command: ${args.join(' ')}`);

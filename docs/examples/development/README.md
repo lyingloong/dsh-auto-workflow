@@ -1,6 +1,6 @@
 # GitHub 项目本地持续开发
 
-这是 `dsh-auto-workflow`的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 brief，外部 Codex/人 merge PR 后，工作流只验证并清理。示例是应用代码，插件只提供通用调度；没有远端 Issue/聊天监听器或外部审批端点。
+这是 `dsh-auto-workflow`的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 brief，外部 Codex/人 merge PR 后，工作流只验证并清理。需求审批在业务仓库的 issue 上完成（工作流只维护自己的审批 issue，不监听任意 Issue）；插件只提供通用调度，示例是应用代码。
 
 **阅读文档不会启动任何操作。** 下面是供操作者检查、替换路径并明确授权后执行的说明，不是对当前仓库或远端的自动操作。首次使用先看 [项目首页](<../../../README.md>)；业务不变量集中在 [流程与保证](<../../workflow-summary.md>)。
 
@@ -12,7 +12,9 @@
 | [store.mjs](<store.mjs>) | 稳定 ID、优先级/FIFO、claim、revision/epoch、审批与反馈。 |
 | [worktrees.mjs](<worktrees.mjs>) | 每需求分支/attached worktree、单 commit 快照、review、brief 与受限清理。 |
 | [pr.mjs](<pr.mjs>) | push 需求分支、创建/更新自己的 draft PR、维护 PR 状态块/标签、轮询外部 merge。 |
-| [pr-protocol.md](<pr-protocol.md>) | 角色头、状态块、finding、merge-ready 标签和 PR 初始化约定。 |
+| [requirement-review.mjs](<requirement-review.mjs>) | 需求审批 issue：脱敏发布、读取维护者评论决定、回写需求状态。 |
+| [github.mjs](<github.mjs>) | 示例共用的 `gh` 调用与仓库坐标解析。 |
+| [pr-protocol.md](<pr-protocol.md>) | 角色头、状态块、finding、merge-ready 标签、需求审批 issue 与 PR 初始化约定。 |
 | [driver.mjs](<driver.mjs>) | command 节点使用的 JSON-only CLI。 |
 
 开始前逐项确认：
@@ -22,7 +24,7 @@
 - 选择一个**项目及其 worktree 外部**的绝对、canonical `dataRoot`，不使用 symlink/junction 别名。每个目标仓库只用一个 store。
 - 集成 checkout 始终处于配置的 `baseBranch`，干净且无进行中的 merge；外部 merge 后工作流会 fetch 并 fast-forward 本地 base。运行期间不要由其他工具同时改动它。
 - 仓库的 PR 合并方式应为 **merge commit**；squash/rebase 会改变批准 commit 的 SHA，工作流会报错而不是静默接受。
-- 创建 workflow 前先运行 [PR 契约初始化](#15-仓库-pr-契约初始化)：检查 label、PR template、branch protection 和 merge method；默认只做只读检查。
+- 创建 workflow 前先运行 [PR 契约初始化](#15-仓库-pr-契约初始化)：检查 label、PR template、branch protection 和 merge method；`apply` 会创建 PR 标签和三个需求审批标签。默认只做只读检查。
 - 检查图里的 agent prompts，补充目标项目的实际验证命令和限制。示例未固定 provider/model，使用 Host 配置；如需有序候选，按 [插件参考](<../../plugin-summary.md>) 设置 `config.models`。模型任务默认没有截止时间。
 - command/HTTP 默认 deny，先获得用户明确批准；agent 的工具权限另行配置，命令 allowlist 不会替 agent 建立文件系统沙箱。
 
@@ -39,12 +41,12 @@ gh auth status
 
 `integration/workflow-batch` 是 PR 的共享 base 分支；每个需求另有自己的 `auto/req-*` 分支，不从 base 之外复制。不要把受保护的 `main` 直接作为可写 base，除非你们明确允许。
 
-从固定 v1.2.0 的源码 checkout 或解压后的发行包取得上表六个文件（含 `pr-protocol.md`）。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
+从固定 v1.2.0 的源码 checkout 或解压后的发行包取得上表八个文件（含 `pr-protocol.md`）。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
 
 ```powershell
 $ExampleSource = 'C:/work/auto-workflow-release/docs/examples/development'
 New-Item -ItemType Directory -Force docs/examples/development | Out-Null
-Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/pr.mjs", "$ExampleSource/pr-protocol.md", "$ExampleSource/workflow.json" -Destination docs/examples/development
+Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/pr.mjs", "$ExampleSource/github.mjs", "$ExampleSource/requirement-review.mjs", "$ExampleSource/pr-protocol.md", "$ExampleSource/workflow.json" -Destination docs/examples/development
 # 检查脚本和提示词，补充项目验证要求后，仅本地提交这些文件
 git add -- docs/examples/development
 git commit -m "Add local development workflow"
@@ -170,6 +172,17 @@ node docs/examples/development/driver.mjs rearm-seed
 
 `mining` 的 seed 不能直接 retire，必须先 `recover-seeds`；`rearm-seed` 也会拒绝需求仍在进行中的方向（先结束或拒绝该需求）。`retire-seed` 只接受 `reason`。
 
+### 需求审批 issue（mid/high 挖掘需求）
+
+挖掘出的 mid/high 风险需求不再占用看板 Human token，而是在**业务仓库**里开一个 issue 审批：
+
+- 每个需求复用一个 issue：返修后 revision+1，工作流更新 issue 正文、去掉已决标签并重新打开；旧 revision 的评论不会批准新内容。
+- 标签：`workflow:requirement-review` 待审，决定后换成 `workflow:requirement-approved` 或 `workflow:requirement-rejected`。`pr-init` 的 `apply:true` 会创建这三个标签；标签缺失时流程会明确失败。
+- 决定写在评论里：`@workflow approve` 或 `@workflow reject <理由>`。只有仓库协作者（OWNER / MEMBER / COLLABORATOR）的评论生效；拒绝必须带理由，否则工作流回一条评论要求补充并继续等待。
+- 发布时间点后立即首查，之后由 `requirement-gate` 每 **30 分钟**复查一次；`check-requirement-issue` 把最新一条有效评论按 `revision` 绑定写入 `requirementApproval`（actor 记为 `github:<login>`）。
+- **公开内容先脱敏**：发布前确定性替换绝对路径、用户主目录、邮箱、长令牌和私有地址；issue 顶部注明"公开版已脱敏，执行以本地记录为准"。本地需求原文不变。
+- 需要 `gh` 认证和仓库访问；issue 创建/更新失败会让该 packet 失败并保留 `requirement-pending` 状态供检查。
+
 ## 3. 定义、运行并只启动一个 producer
 
 在 DSH 会话中使用实际安装的 `auto_workflow_*` 工具。向 `auto_workflow_define` 传入完整 [示例图](<workflow.json>)；先向用户说明 driver 可执行本地 Git 副作用并取得批准，然后传入受限 permissions：
@@ -223,7 +236,7 @@ mine-gate → queue-check
 
 根 `concurrency:6` 被所有节点共享。一个 engineer 节点有三个槽，一个 reviewer 节点有三个槽；**每需求仅一位 reviewer**。命令/miner 也占根容量，不是六个模型槽之外另有无限开销。
 
-1. `route` 让用户需求、挖掘 low 进入准备；挖掘 mid/high 进入 `requirement-human`。Human `reject` 必须有反馈，后续命令落盘后由 analyst 修订**同一个 ID**，递增需求 revision 再评估风险。
+1. `route` 让用户需求、挖掘 low 进入准备；挖掘 mid/high 进入 **GitHub issue 需求审批**：`publish-requirement-issue` 在业务仓库创建/更新脱敏 issue，`check-requirement-issue` 读取维护者评论，`requirement-gate` 每 30 分钟复查一次。决定按 revision 绑定：`approve` 继续准备，`reject` 必须带理由并回到同 ID 修订。
 2. `prepare` 创建并保存 `auto/req-<id>` 分支、attached `worktreePath` 和 `baseRevision`。需求分支和 worktree 一直保留到 cleanup。所有初次开发与返修先经 `begin-engineering`：校验当前 revision/旧 epoch，消耗 admission 并增加 `engineeringEpoch`。
 3. engineer 只在该 worktree/分支实现、运行项目实际验证并提交；不得 merge、push、删除 worktree 或编辑业务 JSON。
 4. `snapshot` 使用冻结的 `begin-engineering` 输出校验 revision/epoch，预留 `snapshot-pending` 意图，把整个分支相对 `baseRevision` 压成一个 commit，再冻结 commit/tree/验证说明为不可变 artifact。不能在旧模型回复到达时临时读取新 revision 来绕过校验。
@@ -244,7 +257,7 @@ PR 模式下外部可以直接 merge ready PR，不必等工作流 Human。只�
 | `self-merge-human` | `reject` | 保留分支/worktree/PR，不 merge、不隐式重试。 |
 | `merge-human`（local） | `approve` | 批准后走本地 `integrate` fallback。 |
 
-Human 引擎决定由后续 command 转成业务记录；旧需求 revision 的回应不能批准新规格。不要把有效拒绝当成换模型的理由。
+Human 引擎决定（merge）由后续 command 转成业务记录；需求审批的 GitHub 评论同样按 revision 绑定，旧 revision 的回应不能批准新规格。不要把有效拒绝当成换模型的理由。
 
 ## 5. PR 发布、外部 merge 与本地 fallback
 
@@ -347,7 +360,8 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | `retire-seed` / `rearm-seed` | `dataRoot`、`seedId`；退役必须带 `reason`，`mining` 状态不能直接退役；需求仍在进行中的方向不能重新启用；重新启用会在轮转末尾入队。 |
 | `record-proposal` | seed envelope、`proposal` 或 `null`、可选 `reason`；稳定 ID 需求，或把 seed 放回轮转并记录 `lastOutcome`/`lastReason`。 |
 | `route` | claimed item；ready 或 needs_approval。 |
-| `requirement-decision` | 冻结 `expectedRevision`、`decision`，reject 必须 note；revision 绑定决定。 |
+| `publish-requirement-issue` | 为 `requirement-pending` 需求创建/更新脱敏审批 issue；返回 envelope 与 `github` 元数据。 |
+| `check-requirement-issue` | 读取 issue 评论，返回 `approved` / `rejected` / `waiting`；决定按 revision 绑定并写入 `requirementApproval`。 |
 | `revise-proposal` | `proposal` 含 `expectedRevision`、title、description、risk；同 ID revision+1。 |
 | `prepare` / `begin-engineering` | 创建 `auto/req-*` 分支和 attached worktree；校验 envelope `revision` / 旧 `engineeringEpoch` 后进入新轮。 |
 | `snapshot` | 冻结 `expectedRevision`、`engineeringEpoch`；非空字符串 `summary`、`verification`；把分支压成单 commit，写不可变 artifact/commit。 |

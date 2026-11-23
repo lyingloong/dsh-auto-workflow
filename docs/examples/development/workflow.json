@@ -148,49 +148,45 @@
       }
     },
     {
-      "id": "requirement-human",
-      "type": "human",
-      "title": "Requirement pending",
-      "config": {
-        "title": "Approve mid/high risk requirement or reject with feedback",
-        "outcomes": [
-          "approve",
-          "reject"
-        ]
-      }
-    },
-    {
-      "id": "approve-requirement",
+      "id": "publish-requirement-issue",
       "type": "command",
-      "title": "Record approval",
-      "inputs": {
-        "dataRef": "$input.dataRef",
-        "claimId": "$input.claimId",
-        "expectedRevision": "$nodes.route.output.revision",
-        "decision": "approve",
-        "note": "$prev.note",
-        "actor": "$prev.actor"
-      },
+      "title": "Publish requirement review issue",
+      "concurrency": 1,
       "config": {
-        "command": "node docs/examples/development/driver.mjs requirement-decision",
+        "command": "node docs/examples/development/driver.mjs publish-requirement-issue",
         "json": true
       }
     },
     {
-      "id": "reject-requirement",
-      "type": "command",
-      "title": "Record feedback",
-      "inputs": {
-        "dataRef": "$input.dataRef",
-        "claimId": "$input.claimId",
-        "expectedRevision": "$nodes.route.output.revision",
-        "decision": "reject",
-        "note": "$prev.note",
-        "actor": "$prev.actor"
-      },
+      "id": "busy-publish-requirement-issue",
+      "type": "gate",
       "config": {
-        "command": "node docs/examples/development/driver.mjs requirement-decision",
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "check-requirement-issue",
+      "type": "command",
+      "title": "Read requirement decision",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs check-requirement-issue",
         "json": true
+      }
+    },
+    {
+      "id": "busy-check-requirement-issue",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "requirement-gate",
+      "type": "gate",
+      "title": "Poll requirement review issue",
+      "config": {
+        "delayMs": 1800000
       }
     },
     {
@@ -427,20 +423,6 @@
     },
     {
       "id": "busy-route",
-      "type": "gate",
-      "config": {
-        "delayMs": 1000
-      }
-    },
-    {
-      "id": "busy-approve-requirement",
-      "type": "gate",
-      "config": {
-        "delayMs": 1000
-      }
-    },
-    {
-      "id": "busy-reject-requirement",
       "type": "gate",
       "config": {
         "delayMs": 1000
@@ -741,31 +723,6 @@
       "on": "ready"
     },
     {
-      "from": "route",
-      "to": "requirement-human",
-      "on": "needs_approval"
-    },
-    {
-      "from": "requirement-human",
-      "to": "approve-requirement",
-      "on": "approve"
-    },
-    {
-      "from": "requirement-human",
-      "to": "reject-requirement",
-      "on": "reject"
-    },
-    {
-      "from": "approve-requirement",
-      "to": "prepare",
-      "on": "ready"
-    },
-    {
-      "from": "reject-requirement",
-      "to": "analyst-revise",
-      "on": "revise"
-    },
-    {
       "from": "analyst-revise",
       "to": "revise-proposal",
       "on": "complete"
@@ -888,26 +845,6 @@
     {
       "from": "busy-route",
       "to": "route",
-      "on": "complete"
-    },
-    {
-      "from": "approve-requirement",
-      "to": "busy-approve-requirement",
-      "on": "busy"
-    },
-    {
-      "from": "busy-approve-requirement",
-      "to": "approve-requirement",
-      "on": "complete"
-    },
-    {
-      "from": "reject-requirement",
-      "to": "busy-reject-requirement",
-      "on": "busy"
-    },
-    {
-      "from": "busy-reject-requirement",
-      "to": "reject-requirement",
       "on": "complete"
     },
     {
@@ -1189,6 +1126,56 @@
       "from": "integration-route",
       "to": "merge-human",
       "on": "local"
+    },
+    {
+      "from": "route",
+      "to": "publish-requirement-issue",
+      "on": "needs_approval"
+    },
+    {
+      "from": "publish-requirement-issue",
+      "to": "check-requirement-issue",
+      "on": "complete"
+    },
+    {
+      "from": "publish-requirement-issue",
+      "to": "busy-publish-requirement-issue",
+      "on": "busy"
+    },
+    {
+      "from": "busy-publish-requirement-issue",
+      "to": "publish-requirement-issue",
+      "on": "complete"
+    },
+    {
+      "from": "check-requirement-issue",
+      "to": "prepare",
+      "on": "approved"
+    },
+    {
+      "from": "check-requirement-issue",
+      "to": "analyst-revise",
+      "on": "rejected"
+    },
+    {
+      "from": "check-requirement-issue",
+      "to": "requirement-gate",
+      "on": "waiting"
+    },
+    {
+      "from": "check-requirement-issue",
+      "to": "busy-check-requirement-issue",
+      "on": "busy"
+    },
+    {
+      "from": "busy-check-requirement-issue",
+      "to": "check-requirement-issue",
+      "on": "complete"
+    },
+    {
+      "from": "requirement-gate",
+      "to": "check-requirement-issue",
+      "on": "complete"
     }
   ]
 }
