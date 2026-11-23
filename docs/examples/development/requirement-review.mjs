@@ -89,6 +89,7 @@ export async function publish(store, id, claimId) {
   const file = await writeBodyFile(issueBody(item));
   let number = item.github?.number ?? null;
   let url = item.github?.url ?? '';
+  const existing = number !== null;
   try {
     if (number) {
       const current = await ghJson(cwd, ['issue', 'view', String(number), '--json', 'number,url,state,labels']);
@@ -109,7 +110,10 @@ export async function publish(store, id, claimId) {
   } finally {
     await rm(file, { force: true });
   }
-  const comments = await listComments(cwd, { owner, name }, number);
+  // A fresh issue accepts any comment; an updated revision only accepts comments
+  // posted after this publication, so a decision on the previous revision cannot
+  // decide the new one.
+  const comments = existing ? await listComments(cwd, { owner, name }, number) : [];
   const commentFloor = comments.reduce((max, comment) => Math.max(max, Number(comment.id) || 0), 0);
   const saved = await store.attachIssue(id, claimId, { number, url, revision: item.revision, commentFloor });
   return { item: saved, outcome: 'complete' };
