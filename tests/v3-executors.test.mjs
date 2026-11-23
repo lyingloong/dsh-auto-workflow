@@ -64,19 +64,24 @@ test('plain command nodes still return raw stdout and status evidence', async t 
   assert.equal(result.output.stdout.trim(), '1');
 });
 
-function agentHarness({ calls, results }) {
+function agentHarness({ calls, results, capabilities = { outputSchema: true } }) {
   return {
+    getProvider(name) {
+      return { name, capabilities };
+    },
     async startActivation(spec) {
-      calls.push({ options: spec.agentOptions ?? null, label: spec.label });
+      calls.push({ options: spec.agentOptions ?? null, label: spec.label, outputSchema: spec.outputSchema ?? null });
       const next = results.shift();
       if (!next) throw new Error('unexpected activation');
       if (next.reject) return { childId: `child-${calls.length}`, result: Promise.reject(new Error(next.reject)), dispose: async () => {} };
+      const result = {
+        stopReason: 'completed',
+        output: [{ type: 'text', text: next.text ?? JSON.stringify({ outcome: next.outcome ?? 'complete', output: next.output ?? {} }) }],
+      };
+      if (next.structured !== undefined) result.structured = next.structured;
       return {
         childId: `child-${calls.length}`,
-        result: Promise.resolve({
-          stopReason: 'completed',
-          output: [{ type: 'text', text: JSON.stringify({ outcome: next.outcome ?? 'complete', output: next.output ?? {} }) }],
-        }),
+        result: Promise.resolve(result),
         dispose: async () => {},
       };
     },
@@ -142,5 +147,63 @@ test('a hung model call is not cut by any default deadline', async t => {
     input: {}, context: {}, definition: { name: 'slow', providers: [] }, token: { id: 'token-slow' },
   });
   assert.equal(result.outcome, 'complete');
+  assert.equal(calls.length, 1);
+});
+
+test('agent nodes request the host structured-output contract and prefer its captured value', async t => {
+  const directory = await fixture(t);
+  const calls = [];
+  const subagents = agentHarness({ calls, results: [{ structured: { outcome: 'pass', output: { summary: 'looks good' } }, text: 'prose that would not parse' }] });
+  const result = await executorsFor(directory, { subagents }).agent({
+    node: { id: 'reviewer', type: 'agent', config: { outcomes: ['pass', 'needs_revision'] } },
+    input: {}, context: {}, definition: { name: 'review', providers: [] }, token: { id: 'token-1' },
+  });
+  assert.equal(result.outcome, 'pass');
+  assert.deepEqual(result.output, { summary: 'looks good' });
+  assert.deepEqual(calls[0].outputSchema, {
+    type: 'object',
+    properties: { outcome: { type: 'string', enum: ['pass', 'needs_revision'] }, output: {} },
+    required: ['outcome'],
+    additionalProperties: true,
+  });
+});
+
+test('a provider without structured-output capability keeps the text JSON contract', async t => {
+  const directory = await fixture(t);
+  const calls = [];
+  const subagents = agentHarness({ calls, results: [{ outcome: 'complete', output: { ok: true } }], capabilities: { outputSchema: false } });
+  const result = await executorsFor(directory, { subagents }).agent({
+    node: { id: 'engineer', type: 'agent', config: { outcomes: ['complete'] } },
+    input: {}, context: {}, definition: { name: 'work', providers: [] }, token: { id: 'token-1' },
+  });
+  assert.equal(calls[0].outputSchema, null);
+  assert.equal(result.outcome, 'complete');
+});
+
+test('a structured result with an unknown outcome is rejected without model fallback', async t => {
+  const directory = await fixture(t);
+  const calls = [];
+  const subagents = agentHarness({ calls, results: [{ structured: { outcome: 'weird' } }, { outcome: 'complete' }] });
+  await assert.rejects(
+    () => executorsFor(directory, { subagents }).agent({
+      node: { id: 'reviewer', type: 'agent', config: { outcomes: ['complete'], models: [{ provider: 'p', model: 'a' }, { provider: 'p', model: 'b' }] } },
+      input: {}, context: {}, definition: { name: 'review', providers: [] }, token: { id: 'token-1' },
+    }),
+    error => error.code === 'invalid_agent_output' && /unknown outcome/.test(error.message),
+  );
+  assert.equal(calls.length, 1);
+});
+
+test('prose-only agent output records a bounded final-text excerpt', async t => {
+  const directory = await fixture(t);
+  const calls = [];
+  const subagents = agentHarness({ calls, results: [{ text: 'I reviewed the change and it looks fine to me.' }] });
+  await assert.rejects(
+    () => executorsFor(directory, { subagents }).agent({
+      node: { id: 'reviewer', type: 'agent', config: { outcomes: ['pass', 'needs_revision'] } },
+      input: {}, context: {}, definition: { name: 'review', providers: [] }, token: { id: 'token-1' },
+    }),
+    error => error.code === 'invalid_agent_output' && /final text: I reviewed the change/.test(error.message),
+  );
   assert.equal(calls.length, 1);
 });

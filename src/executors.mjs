@@ -33,6 +33,12 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
         : node.config.outcome ? [node.config.outcome] : ['complete'];
       const prompt = agentPrompt({ definition, node, input, context, outcomes });
       const candidates = modelCandidates(node, lane);
+      const providerName = settings.subagentProvider ?? 'spawn';
+      // The host's structured output is a child-scoped `structured_output` tool
+      // whose arguments are validated against this schema; its result arrives as
+      // SubagentResult.structured. Providers that do not advertise the capability
+      // keep the text JSON protocol.
+      const outputSchema = providerSupportsOutputSchema(subagents, providerName) ? agentOutputSchema(outcomes) : null;
       const scope = executionScope(exec.signal, node.config.timeoutMs ?? settings.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS, `agent ${node.id}`);
       const failures = [];
       try {
@@ -51,11 +57,12 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
             // nested `request` object. `label`/`signal` stay after the spread
             // so they take precedence.
             activation = await subagents.startActivation({
-              provider: settings.subagentProvider ?? 'spawn',
+              provider: providerName,
               prompt: [{ type: 'text', text: prompt }],
               parent: exec.agent,
               cwd: agentCwd,
               ...(options ? { agentOptions: options } : {}),
+              ...(outputSchema ? { outputSchema } : {}),
               label: `workflow:${node.id}`,
               signal: scope.signal,
               delivery: 'caller',
@@ -78,8 +85,17 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
             }
             if (result?.stopReason === 'error') throw new Error(result.diagnostic ?? 'Provider call failed');
             if (result?.stopReason !== 'completed') throw executionError('agent_incomplete', result?.diagnostic ?? ('Subagent stopped: ' + result?.stopReason));
-            const parsed = parseAgentText(textOf(result?.output), { outcomes, fallback: outcomes[0] });
-            return { ...parsed, model };
+            const structured = structuredAgentResult(result?.structured, outcomes);
+            if (structured) return { ...structured, model };
+            const text = textOf(result?.output);
+            try {
+              const parsed = parseAgentText(text, { outcomes, fallback: outcomes[0] });
+              return { ...parsed, model };
+            } catch (error) {
+              if (error?.code !== 'invalid_agent_output') throw error;
+              const excerpt = textExcerpt(text);
+              throw executionError('invalid_agent_output', `${error.message}${excerpt ? ` (final text: ${excerpt})` : ''}`);
+            }
           } catch (error) {
             failure = cancellationError(error, scope.signal);
             if (['execution_aborted', 'execution_timeout', 'invalid_agent_output', 'activity_persistence_failed', 'agent_incomplete'].includes(failure.code)) throw failure;
@@ -364,6 +380,41 @@ export function parseAgentText(text, { outcomes, fallback = outcomes[0] }) {
     };
   }
   throw invalid('agent response contains no unambiguous decision');
+}
+
+function providerSupportsOutputSchema(subagents, name) {
+  if (typeof subagents?.getProvider !== 'function') return false;
+  try {
+    return subagents.getProvider(name)?.capabilities?.outputSchema === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The host validates this schema when the child calls `structured_output`. */
+function agentOutputSchema(outcomes) {
+  return {
+    type: 'object',
+    properties: {
+      outcome: { type: 'string', enum: [...outcomes] },
+      output: {},
+    },
+    required: ['outcome'],
+    additionalProperties: true,
+  };
+}
+
+function structuredAgentResult(value, outcomes) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const outcome = value.outcome;
+  if (typeof outcome !== 'string' || !outcomes.includes(outcome)) {
+    throw executionError('invalid_agent_output', `structured result returned an unknown outcome; expected one of: ${outcomes.join(', ')}`);
+  }
+  return { outcome, output: Object.hasOwn(value, 'output') ? value.output : value };
+}
+
+export function textExcerpt(text, limit = 300) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim().slice(-limit);
 }
 
 function jsonObjects(text) {

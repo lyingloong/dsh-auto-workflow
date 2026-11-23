@@ -76,6 +76,8 @@
 
 只有 provider/model 调用失败（例如网络错误、模型不可用、激活失败）才尝试下一候选。有效的 `fail`、`revise`、`needs_revision`、`reject` 按业务边处理，不换模型；取消、无效模型输出和失败预算耗尽也不触发回退。模型必须给出明确 outcome，不能将无效回复当作批准。
 
+agent 节点会请求宿主的结构化输出契约：当 provider 声明 `outputSchema` 能力（内置 `spawn` 支持）时，子 agent 通过作用域内的 `structured_output` 工具提交 `{outcome, output}`，宿主按 schema 校验后以 `SubagentResult.structured` 返回；未提交或 provider 不支持时回退到文本 JSON 协议。无效结果会带上有界的最终文本节选，便于定位。
+
 模型/开发任务**默认没有截止时间**。显式正值 `config.timeoutMs` / 插件 `agentTimeoutMs` 是 opt-in，`0` 禁用。command/HTTP 保留操作超时，避免挂起请求无限占用资源。
 
 ### JSON command 协议
