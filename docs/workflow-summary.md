@@ -18,12 +18,11 @@
   → push 分支并创建 draft PR
   → reviewer 池（最多 3；每需求只分配一位）
     revise → 同 ID / 分支 / worktree / PR 的下一轮开发
-  → brief 生成 Human/PR 共用摘要
+  → brief 生成 decision-first PR 摘要
   → ready-pr 标记自己的 PR ready
-  → Codex/人可直接 merge PR（无需内部 Human）
-  → 宽限期仍 open：self-merge-human
-    approve → self-merge-pr 用 merge commit 自己 merge；revise/reject 保留或返修
-  → check-pr 轮询自己的 PR，验证 review commit 在 base
+  → pr-watch 读取授权判决/review/thread/CI 和合并意图（默认 @workflow merge）
+  → pr-merge 重新校验后用 merge commit 自己 merge；revise 回到同一分支返修
+  → 外部提前 merge 时验证 review commit 在 base
   → 默认 after-verified-merge：清理 worktree 和本地需求分支
 ```
 
@@ -55,19 +54,19 @@ Human 等待不占工作槽，不阻挡其他 packet、producer 或新到达的�
 
 有效的审查返修使用业务 outcome **`revise`**，先落盘再进入下一轮，不借用通用失败预算的 `needs_revision`。示例没有自动业务返修次数上限；操作者可暂停节点。失败、取消或无效模型输出也不能冒充一次通过的 review。
 
-示例业务存储为 `version: 3`（seed 轮转与 claim 恢复），与包 SemVer 无关。版本 2 的旧库会被拒绝，不迁移、不删除；使用新的 canonical root 并保留旧数据供检查。
+示例业务存储为 `version: 4`（decision-first 需求字段 + GitHub merge policy），与包 SemVer 无关。旧 v3 库会被拒绝读取，先运行 `driver migrate`（默认 dry-run）显式升级；不静默迁移、不删除旧数据。
 
 ## 人工批准、PR 发布和保留
 
-通用 Human 节点只记录小型 outcome/output；后续示例命令才写入业务决定。需求拒绝、实现返修/拒绝都需要有意义的反馈。工作流发布自己的需求 PR，但外部 merge 是独立的 GitHub 决定；Human 审批精确产物不等于允许工作流自行 merge。
+通用 Human 节点只记录小型 outcome/output；后续示例命令才写入业务决定。需求拒绝、实现返修/拒绝都需要有意义的反馈。PR 模式的新决定面是 GitHub：协作者的 `[verdict=pass|revise]` 评论或正式 review、未 resolve 的 thread，以及 `@workflow merge` / `workflow:merge` 标签；实现返修仍需反馈，但不依赖看板 token。本地 fallback 保留 Human。
 
-Publish/ready/check 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；review pass + brief 后即可 ready，不需要内部 Human 先批准；check 只轮询工作流自己记录的 `prNumber`。工作流 push `auto/req-*` 分支、创建/编辑自己的 draft PR。外部可以直接 merge ready PR；只有宽限期 `selfMergeAfterMs` 到期仍未 merge 时，才进入 `self-merge-human`，Human 同意后工作流用自己的 token 对该 PR 执行 **merge commit**，不绕过 branch protection。
+Publish/ready/watch/merge 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；review pass + brief 后即可 ready，不需要内部 Human 先批准；watch 只读取工作流自己记录的 `prNumber`。工作流 push `auto/req-*` 分支、创建/编辑自己的 draft PR，读取授权判决后按 `mergePolicy`（`comment` / `auto` / `label`）用 **merge commit** 合并；外部提前 merge 同样被验证，不绕过 branch protection。
 
-`brief` 在 review pass 后生成结构化摘要（需求、改动、验证、审查、风险），同一份内容进入 PR body 和看板 Human 详情；原始 artifact 折叠。review/rework 会 force-push 同一 PR 的新单 commit，并重新绑定 artifact/review/Human approval。
+`brief` 在 review pass 后生成 decision-first 摘要（Change、Verification、Review verdict、Merge decision），同一份内容进入 PR body；完整需求/审查证据折叠。review/rework 会 force-push 同一 PR 的新单 commit，并重新绑定 artifact/review/反馈窗口。
 
-PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论不承担状态。workflow 只在 head 匹配、CI 全绿或无 CI、review thread 全 resolve 时设置 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签；head 变化、CI 失败或 thread 未关闭时撤销标签。完整的角色头、finding 和合并门规则见 [PR 交流规范](<examples/development/pr-protocol.md>)。
+PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论不承担状态。workflow 只在 head 匹配、CI 全绿或 `none`、review thread 全 resolve、合并意图满足时设置 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签；head 变化、CI 失败、thread 未关闭或出现 `revise` 时撤销标签并回到返修。完整的判决标记、finding 和合并门规则见 [PR 交流规范](<examples/development/pr-protocol.md>)。
 
-`check-pr` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；宽限期后仍未合并时，`self-merge-human` 才请求 Human 批准，`self-merge-pr` 再用 merge commit 合并并验证。外部和 self-merge 都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
+`pr-watch` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；`pr-merge` 在真正合并前重新读取 PR，处理评论变化、外部抢先合并和 PR 关闭。所有合并都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
 
 `integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。
 

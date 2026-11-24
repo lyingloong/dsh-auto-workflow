@@ -33,6 +33,8 @@ function issueTitle(item) {
 
 export function issueBody(item) {
   const tags = (item.tags ?? []).map(tag => redactForPublic(tag)).join(', ');
+  const why = (item.why ?? []).map(line => `- ${redactForPublic(line)}`);
+  const acceptance = (item.acceptance ?? []).map(line => `- ${redactForPublic(line)}`);
   return [
     '<!-- workflow-requirement',
     `requirement: ${item.id}`,
@@ -41,9 +43,27 @@ export function issueBody(item) {
     '-->',
     `# ${issueTitle(item)}`,
     '',
-    '## 描述',
+    `> risk \`${item.risk}\` · revision ${item.revision}${item.seedId ? ` · seed \`${item.seedId}\`` : ''}${item.relatedRequirementId ? ` · related \`${item.relatedRequirementId}\`` : ''}`,
     '',
-    redactForPublic(item.description),
+    '## What',
+    '',
+    redactForPublic(item.summary),
+    '',
+    ...(why.length ? ['## Why / impact', '', ...why, ''] : []),
+    '## Acceptance',
+    '',
+    ...(acceptance.length ? acceptance : ['_No explicit acceptance recorded; rely on the evidence below._']),
+    '',
+    '## Decision',
+    '',
+    '评论 `@workflow approve` 或 `@workflow reject <理由>`。只有仓库协作者（OWNER / MEMBER / COLLABORATOR）的决定生效；拒绝必须给出理由。',
+    '',
+    '<details>',
+    '<summary>Full evidence</summary>',
+    '',
+    redactForPublic(item.evidence),
+    '',
+    '</details>',
     '',
     '## 元数据',
     '',
@@ -53,10 +73,6 @@ export function issueBody(item) {
     `- tags: ${tags || '—'}`,
     ...(item.seedId ? [`- seed: \`${item.seedId}\``] : []),
     ...(item.relatedRequirementId ? [`- related: \`${item.relatedRequirementId}\``] : []),
-    '',
-    '## 审批',
-    '',
-    '评论 `@workflow approve` 或 `@workflow reject <理由>`。只有仓库协作者（OWNER / MEMBER / COLLABORATOR）的决定生效；拒绝必须给出理由。',
     '',
     '> 公开版已脱敏：路径、邮箱、令牌和私有地址已替换为占位符。审批对象是本 issue 的描述；执行以工作流内部记录为准。',
   ].join('\n');

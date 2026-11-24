@@ -1,6 +1,6 @@
 # GitHub 项目本地持续开发
 
-这是 `dsh-auto-workflow`的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 brief，外部 Codex/人 merge PR 后，工作流只验证并清理。需求审批在业务仓库的 issue 上完成（工作流只维护自己的审批 issue，不监听任意 Issue）；插件只提供通用调度，示例是应用代码。
+这是 `dsh-auto-workflow`的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 decision-first brief，在 PR 上读取授权的 verdict/合并意图，按配置策略用 merge commit 合并或要求同一分支返修；外部提前 merge 也会被验证。需求审批同样在业务仓库的 issue 上完成（工作流只维护自己的审批 issue，不监听任意 Issue）；插件只提供通用调度，示例是应用代码。
 
 **阅读文档不会启动任何操作。** 下面是供操作者检查、替换路径并明确授权后执行的说明，不是对当前仓库或远端的自动操作。首次使用先看 [项目首页](<../../../README.md>)；业务不变量集中在 [流程与保证](<../../workflow-summary.md>)。
 
@@ -8,13 +8,14 @@
 
 | 组件 | 职责 |
 | --- | --- |
-| [workflow.json](<workflow.json>) | 一个 run 中的周期 producer、分支/worktree、3+3 工作池、PR 发布/轮询与 Human brief。 |
-| [store.mjs](<store.mjs>) | 稳定 ID、优先级/FIFO、claim、revision/epoch、审批与反馈。 |
-| [worktrees.mjs](<worktrees.mjs>) | 每需求分支/attached worktree、单 commit 快照、review、brief 与受限清理。 |
-| [pr.mjs](<pr.mjs>) | push 需求分支、创建/更新自己的 draft PR、维护 PR 状态块/标签、轮询外部 merge。 |
-| [requirement-review.mjs](<requirement-review.mjs>) | 需求审批 issue：脱敏发布、读取维护者评论决定、回写需求状态。 |
+| [workflow.json](<workflow.json>) | 一个 run 中的周期 producer、分支/worktree、3+3 工作池、PR 发布/GitHub 反馈 watcher/合并门禁。 |
+| [store.mjs](<store.mjs>) | 稳定 ID、优先级/FIFO、claim、revision/epoch、decision-first 字段、审批与反馈、explicit v3→v4 migrate。 |
+| [worktrees.mjs](<worktrees.mjs>) | 每需求分支/attached worktree、单 commit 快照、review、decision-first brief 与受限清理。 |
+| [pr.mjs](<pr.mjs>) | push 需求分支、创建/更新 draft PR、读取 GitHub 反馈、按 `mergePolicy` 合并或返修、验证 merge commit。 |
+| [pr-feedback.mjs](<pr-feedback.mjs>) | 纯函数：授权评论/review、head/window 绑定、最新判决、merge 策略。 |
+| [requirement-review.mjs](<requirement-review.mjs>) | 需求审批 issue：决策优先模板、脱敏发布、读取维护者评论决定、回写需求状态。 |
 | [github.mjs](<github.mjs>) | 示例共用的 `gh` 调用与仓库坐标解析。 |
-| [pr-protocol.md](<pr-protocol.md>) | 角色头、状态块、finding、merge-ready 标签、需求审批 issue 与 PR 初始化约定。 |
+| [pr-protocol.md](<pr-protocol.md>) | 角色、状态块、判决标记、合并策略、需求审批 issue 与 PR 初始化约定。 |
 | [driver.mjs](<driver.mjs>) | command 节点使用的 JSON-only CLI。 |
 
 开始前逐项确认：
@@ -41,12 +42,12 @@ gh auth status
 
 `integration/workflow-batch` 是 PR 的共享 base 分支；每个需求另有自己的 `auto/req-*` 分支，不从 base 之外复制。不要把受保护的 `main` 直接作为可写 base，除非你们明确允许。
 
-从固定 v1.2.0 的源码 checkout 或解压后的发行包取得上表八个文件（含 `pr-protocol.md`）。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。
+从源码 checkout 或下次发行包取得上表九个文件（含 `pr-protocol.md`）。安装插件不等于把它们放进业务项目；需要明确复制到图使用的相同路径。若目标已有同名文件，先比较，**不要直接覆盖**。store 当前为 `version: 4`（decision-first 字段 + GitHub merge policy）；旧 v3 store 先运行 `driver migrate`（见下），不要原地改写。
 
 ```powershell
 $ExampleSource = 'C:/work/auto-workflow-release/docs/examples/development'
 New-Item -ItemType Directory -Force docs/examples/development | Out-Null
-Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/pr.mjs", "$ExampleSource/github.mjs", "$ExampleSource/requirement-review.mjs", "$ExampleSource/pr-protocol.md", "$ExampleSource/workflow.json" -Destination docs/examples/development
+Copy-Item "$ExampleSource/driver.mjs", "$ExampleSource/store.mjs", "$ExampleSource/worktrees.mjs", "$ExampleSource/pr.mjs", "$ExampleSource/pr-feedback.mjs", "$ExampleSource/github.mjs", "$ExampleSource/requirement-review.mjs", "$ExampleSource/pr-protocol.md", "$ExampleSource/workflow.json" -Destination docs/examples/development
 # 检查脚本和提示词，补充项目验证要求后，仅本地提交这些文件
 git add -- docs/examples/development
 git commit -m "Add local development workflow"
@@ -71,7 +72,7 @@ node docs/examples/development/driver.mjs pr-init
 - `gh` 认证和仓库权限（硬性）；
 - 是否允许 merge commit（硬性）；
 - branch protection 是否要求 PR、conversation resolution 和 required checks（默认硬性，`manualGate` 下为警告）；
-- 是否存在 `workflow:merge-ready` 标签；
+- 是否存在 `workflow:merge-ready` 和 `workflow:merge` 标签；
 - PR template 是否包含状态块。
 
 只创建标签和缺失的 PR template：
@@ -101,23 +102,23 @@ node docs/examples/development/driver.mjs pr-init
 继续在目标项目根目录运行；以下 `dataRoot` 与项目并列，位于项目外：
 
 ```powershell
-$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","cleanupPolicy":"after-verified-merge","integrationMode":"pull-request","prRemote":"origin","selfMergeAfterMs":300000}'
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot":"C:/work/project","baseBranch":"integration/workflow-batch","cleanupPolicy":"after-verified-merge","integrationMode":"pull-request","prRemote":"origin","mergePolicy":"comment"}'
 node docs/examples/development/driver.mjs init
 ```
 
-配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR；review pass 后 PR 标记 ready，外部 Codex/你可以直接 merge，不必先经过工作流内部 Human。宽限期 `selfMergeAfterMs` 内没有外部 merge 时，`check-pr` 才进入 `self-merge-human`；Human 同意后才由工作流用 **merge commit** merge 自己的 PR，再验证/清理。`selfMergeAfterMs` 默认 `300000`（5 分钟），设为 `0` 表示 ready 后立即请求 self-merge 审批。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback；不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 为 `version: 3`（seed 轮转与 claim 恢复），不等于包版本；版本 2 的旧库会被拒绝，同目录不迁移、不重置，换用新的 dataRoot 并保留旧数据供检查。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。`maxMiningSeeds`（默认 `3`）是在挖 seed 的 store 级硬上限；`staleClaimMs`（默认 `1800000`）既是 `status` 报告过期 claim 的阈值，也是 `recover-seeds` 的默认门槛，运行时不自动回收。
+配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR；review pass 后 PR 标记 ready，GitHub 上授权的判决（`[verdict=pass]` / 正式 APPROVE）和合并意图（默认 `@workflow merge` 评论）决定后续，不需要看板 Human token。`mergePolicy` 可为 `comment`（默认）、`auto` 或 `label`；`pr-merge` 会重新读取 PR 并用 **merge commit** 合并，squash/rebase 会报错而不是放宽绑定。外部提前 merge 仍会被 `pr-watch` 发现、验证并清理。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback（仍用看板 Human），不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 为 `version: 4`（decision-first 字段 + GitHub merge policy），不等于包版本；旧 v3 库会拒绝读取，先运行 `driver migrate`（默认 dry-run）显式升级，保留审计字段。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。`maxMiningSeeds`（默认 `3`）是在挖 seed 的 store 级硬上限；`staleClaimMs`（默认 `1800000`）既是 `status` 报告过期 claim 的阈值，也是 `recover-seeds` 的默认门槛，运行时不自动回收。
 
 ### 用户 intake
 
 只有获得授权的用户/调用者应提交用户需求；示例不扫描全部聊天。主会话写需求后，**可选地**再调用一次 `driver seed` 补充 0–3 个相关证据 seed；不强制、不应为了凑数而复述需求：
 
 ```powershell
-$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","requirement":{"id":"req-example","source":"user","title":"Concrete requested change","description":"Expected behavior and acceptance checks.","risk":"high","tags":["user"]}}'
+$env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","requirement":{"id":"req-example","source":"user","title":"Concrete requested change","summary":"Expected behavior in 1-2 sentences.","why":["Impact on the current flow"],"acceptance":["Check the observable behavior","Keep existing behavior intact"],"evidence":"Full analysis, file:line references and alternatives for the collapsed details section.","risk":"high","tags":["user"]}}'
 node docs/examples/development/driver.mjs requirement
 ```
 
 - ID 形如 `req-<slug>` / `seed-<slug>`；slug 为小写 ASCII 字母/数字开头，仅含字母、数字、`_`、`-`，最长 64 字符。拒绝路径穿越、扩展名/流字符和大小写碰撞风险。
-- 用户 priority 强制为 `0`，即使风险 high 也跳过**需求审批**；实现 review 和 Human merge 门禁不跳过。
+- 用户 priority 强制为 `0`，即使风险 high 也跳过**需求审批**；实现 review 与合并门禁（PR 模式由 GitHub 决定）不跳过。
 - 队列按用户优先、priority、原始 FIFO、稳定 ID 准入。小的 priority 更早；已领取工作不被抢占。
 - 修改 queued 项时，在 `requirement` 对象中携带当前 `expectedRevision`，沿用同 ID、递增 revision 且保留 FIFO。已领取/执行项不能 intake 覆盖，应走反馈返修。
 
@@ -256,7 +257,7 @@ mine-gate → queue-check
 
 新增用户需求后，如需立即准入，可 enqueue `nodeId:"dispatch"`、`input:{"dataRoot":"C:/work/project-workflow-data"}`；否则现有 producer 在后续周期领取。有限 dispatch 不会产生新的持续 producer。
 
-## 4. 开发、review 与 Human merge 门禁
+## 4. 开发、review 与合并门禁
 
 根 `concurrency:6` 被所有节点共享。一个 engineer 节点有三个槽，一个 reviewer 节点有三个槽；**每需求仅一位 reviewer**。命令/miner 也占根容量，不是六个模型槽之外另有无限开销。
 
@@ -266,39 +267,36 @@ mine-gate → queue-check
 4. `snapshot` 使用冻结的 `begin-engineering` 输出校验 revision/epoch，预留 `snapshot-pending` 意图，把整个分支相对 `baseRevision` 压成一个 commit，再冻结 commit/tree/验证说明为不可变 artifact。不能在旧模型回复到达时临时读取新 revision 来绕过校验。
 5. `publish-pr` 推送该需求分支，并创建/更新**自己的 draft PR**；PR head 始终是刚冻结的单 commit。外部 Codex/人可以提前在 PR 看 diff 和评论，但 draft 不能 merge。
 6. 一位 reviewer 检查精确 artifact/commit 并验证，不改 worktree。`record-review` 复验干净 HEAD 并写入不可变 review。`revise` 先落盘，再回同 ID/分支/worktree/PR 的下一工程轮；有效返修不触发模型回退或通用业务返修上限。
-7. `pass` 后 `brief` 生成结构化 Human/PR brief，并用同一内容更新 PR body。PR 模式随后直接进入 `ready-pr`，不需要内部 Human 先批准；本地 fallback 才经 `merge-human`。
+7. `pass` 后 `brief` 生成 decision-first 的 Human/PR 摘要（Change / Verification / Review verdict / Merge decision，完整证据折叠），并用同一内容更新 PR body。PR 模式随后直接进入 `ready-pr`，由 GitHub 反馈与 `mergePolicy` 决定；本地 fallback 才经 `merge-human`。
 
-PR 模式下外部可以直接 merge ready PR，不必等工作流 Human。只有在宽限期结束、外部仍未 merge 时，`check-pr` 才进入 `self-merge-human`，让 Human 决定是否由工作流自己 merge。反馈 output 示例：
+PR 模式下不再需要看板 merge token。`pr-watch` 每 30 秒读取同一 PR 的授权评论/review、unresolved thread、CI 和合并意图；`pr-merge` 重新校验后用 merge commit 合并，阻塞反馈回到同 ID/分支/worktree/PR 返修。
 
-```json
-{ "note": "External review did not merge; approve workflow self-merge.", "actor": "human" }
-```
-
-| Human token | outcome | 后果 |
+| 输入 | 形式 | 后果 |
 | --- | --- | --- |
-| `self-merge-human` | `approve` | 批准精确 revision/artifact/commit；`self-merge-pr` 用 merge commit merge 自己的 PR。 |
-| `self-merge-human` | `revise` | 反馈并回同 ID/分支/worktree/PR 返修。 |
-| `self-merge-human` | `reject` | 保留分支/worktree/PR，不 merge、不隐式重试。 |
-| `merge-human`（local） | `approve` | 批准后走本地 `integrate` fallback。 |
+| 评论判决 | 协作者 `[verdict=pass]` 或 `[verdict=revise]`，可带 `[head=<sha>]` | 最新一条生效；`revise` 移除 merge-ready 并返修 |
+| 正式 review | `APPROVED` / `CHANGES_REQUESTED` | 按 review 的 `commit_id` 绑定；approved 可合并 |
+| review thread | 未 resolve 的 thread | 无论判决如何都阻塞合并 |
+| 合并意图（`comment`） | 协作者 `@workflow merge`；`@workflow stop` 取消 | 满足判决/CI/thread 后由 `pr-merge` 合并 |
+| 合并意图（`label`） | PR 带 `workflow:merge` 标签 | 同上 |
+| 合并意图（`auto`） | 无额外输入 | 通过校验即合并 |
 
-Human 引擎决定（merge）由后续 command 转成业务记录；需求审批的 GitHub 评论同样按 revision 绑定，旧 revision 的回应不能批准新规格。不要把有效拒绝当成换模型的理由。
+Human 引擎决定（本地 merge）由后续 command 转成业务记录；需求审批的 GitHub 评论同样按 revision 绑定，旧 revision 的回应不能批准新规格。不要把有效拒绝当成换模型的理由。
 
-## 5. PR 发布、外部 merge 与本地 fallback
+## 5. PR 发布、GitHub 反馈与合并门禁
 
-`publish-pr`/`ready-pr`/`check-pr`/`self-merge-pr` 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；ready 在 brief 后直接执行，不需要内部 Human 先批准；check 只轮询工作流自己记录的 `prNumber`，不会搜索其他 PR。
+`publish-pr`/`ready-pr`/`pr-watch`/`pr-merge`/`pr-request-changes` 串行使用 store 级 integration lock。PR 发布前必须有当前 artifact 的通过 review；ready 在 brief 后直接执行，不需要内部 Human 先批准；watch 只读取工作流自己记录的 `prNumber`，不会搜索其他 PR。
 
 ### 正常 PR 路径
 
 1. 第一次 snapshot 后 push `auto/req-<id>`，创建 draft PR，base 为配置的 `baseBranch`；
 2. review/rework 继续更新同一分支/PR，并 force-push 新的单 commit；
-3. review pass + `brief` 后，`ready-pr` 调 GitHub 把 PR 标记 ready，并记录 `readyAt`；
-4. Codex/你可以在宽限期 `selfMergeAfterMs` 内直接 merge，不需要工作流内部批准；
-5. `check-pr` 每 30 秒查询该 PR；看到外部 merge 就验证/清理；
-6. 如果宽限期结束 PR 仍 open，进入 `self-merge-human`；Human `approve` 后 `self-merge-pr` 调用 `gh pr merge --merge`，记录 `selfMergedByWorkflow`；
-7. 外部 merge 或 self-merge 后，`check-pr`/`self-merge-pr` fetch `origin/baseBranch`、fast-forward 本地 base、验证 review commit 是祖先，记录 `merged` 并进入 cleanup；
-8. PR 被关闭未合并时回到同一需求工程返修，不自动本地 merge。
+3. review pass + `brief` 后，`ready-pr` 调 GitHub 把 PR 标记 ready，并记录 `readyAt`/反馈窗口起点；
+4. `pr-watch` 每 30 秒读取 PR：授权 `pass` + CI 绿/none + 无 unresolved thread + 合并意图满足 → 返回 `pass`；`revise` 或 unresolved thread → 返回 `revise`；其余 `waiting`；
+5. `pr-merge` 在合并前重新读取 PR，再次校验 head/判决/CI/thread/策略；通过后 `gh pr merge --merge`，再验证 review commit 是 base 祖先；
+6. 外部提前 merge 时 `pr-watch`/`pr-merge` 直接验证并清理；PR 被关闭时回到同一需求工程返修；
+7. 合并后 fetch `origin/baseBranch`、fast-forward 本地 base、记录 `integration.mechanism = workflow-merge`（工作流合并）或 `external-pr`（外部合并）和 merge commit，然后 cleanup。
 
-`selfMergeAfterMs` 默认 5 分钟，`0` 表示 ready 后立即请求 self-merge 审批。无论外部还是自己 merge，都必须使用 **merge commit**；squash/rebase 会改变 commit 的 SHA，工作流会明确报错，而不是悄悄放宽绑定。
+所有合并都必须是 **merge commit**；squash/rebase 会改变审查 commit 的 SHA，工作流会明确报错，而不是悄悄放宽绑定。`mergePolicy` 在 store 初始化时固定：`comment`（默认，`@workflow merge`）、`auto`、`label`（`workflow:merge`）。
 
 ### 本地 fallback
 
@@ -310,7 +308,7 @@ Human 引擎决定（merge）由后续 command 转成业务记录；需求审批
 
 本地 fallback 跳过 PR 发布，Human 批准后走原有 `integrate`（含冲突自动 abort 和返修）。它只用于没有 GitHub remote/token 的隔离验收；正常开发不要和 PR 模式混用。
 
-PR 被外部 close 或 merge 失败不会被自动重放。先检查 PR/分支/worktree 和业务状态，再显式续接。
+GitHub 反馈不可读、head 变化或合并失败不会被自动重放。先检查 PR/分支/worktree 和业务状态，再显式续接。
 
 **工作流会 push 自己的需求分支并创建/更新 PR；外部可以直接 merge ready PR，只有当它超过宽限期仍未 merge 时，才需要 Human 批准工作流自己用 token merge 这个 PR。** 工作流不会替其他 PR 背书、不会绕过 branch protection、不会部署；仓库保护分支、CI 和 merge 规则继续适用。
 
@@ -374,7 +372,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 
 | Stage | 额外输入 / 主要行为 |
 | --- | --- |
-| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`selfMergeAfterMs`（默认 5 分钟）、`maxMiningSeeds`（默认 3）、`staleClaimMs`（默认 30 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
+| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`mergePolicy`（默认 `comment`，或 `auto`/`label`）、`maxMiningSeeds`（默认 3）、`staleClaimMs`（默认 30 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
 | `pr-init` | 创建 workflow 前的 PR 契约检查；输入 `repoRoot`、`baseBranch`，`apply:true` 只创建 label 和缺失的 PR template，不改 branch protection/merge method；`manualGate:true` 把 branch protection 相关检查降为警告，认证/仓库访问/merge commit 仍是硬性要求。 |
 | `requirement` / `seed` | `dataRoot` 与 `requirement` / `seed` 对象；显式 intake。seed 可带 `origin`、`category`、`relatedRequirementId`；可选，不强制。 |
 | `claim` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；领需求，返回 ready items 或 idle。 |
@@ -386,21 +384,24 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | `route` | claimed item；ready 或 needs_approval。 |
 | `publish-requirement-issue` | 为 `requirement-pending` 需求创建/更新脱敏审批 issue；返回 envelope 与 `github` 元数据。 |
 | `check-requirement-issue` | 读取 issue 评论，返回 `approved` / `rejected` / `waiting`；决定按 revision 绑定并写入 `requirementApproval`。 |
-| `revise-proposal` | `proposal` 含 `expectedRevision`、title、description、risk；同 ID revision+1。 |
+| `revise-proposal` | `proposal` 含 `expectedRevision`、title、summary、why、acceptance、evidence、risk；同 ID revision+1。 |
 | `prepare` / `begin-engineering` | 创建 `auto/req-*` 分支和 attached worktree；校验 envelope `revision` / 旧 `engineeringEpoch` 后进入新轮。 |
 | `snapshot` | 冻结 `expectedRevision`、`engineeringEpoch`；非空字符串 `summary`、`verification`；把分支压成单 commit，写不可变 artifact/commit。 |
 | `reconcile-snapshot` | `decision:finalize`、冻结 revision/epoch、operator note；仅完成已检查意图。 |
 | `publish-pr` | 推送需求分支并创建/更新自己的 draft PR；local fallback 返回 `skipped`。 |
 | `review-input` | 当前 `artifactRef` / `commit`；生成冻结 review 输入，也是对账后的续接入口。 |
 | `record-review` | 精确 artifact/commit、`decision:pass\|revise`，非空字符串 summary/verification/reviewer。 |
-| `brief` | pass 后生成 Human/PR 共用的结构化 brief，并更新 PR body。 |
-| `merge-decision` | 当前 artifact、decision，返修/拒绝需反馈；精确产物批准。 |
+| `brief` | pass 后生成 decision-first brief（Change/Verification/Review/Merge decision，证据折叠），并更新 PR body。 |
+| `merge-decision` | 仅 local fallback：当前 artifact、decision，返修/拒绝需反馈；精确产物批准。 |
 | `integration-route` | 读取 store 配置，返回 `pr` 或 `local`。 |
-| `ready-pr` / `check-pr` | review pass + brief 后标记自己的 PR ready；轮询同一 `prNumber`，外部 merge 或超时返回 `approval-needed`。 |
-| `self-merge-human` / `self-merge-pr` | 外部未 merge 时的 Human 自合并门禁；批准后用自己的 token 以 merge commit 合并并验证。 |
+| `ready-pr` | review pass + brief 后标记自己的 PR ready，记录反馈窗口。 |
+| `pr-watch` | 读取同一 PR 的授权评论/review、unresolved thread、CI、合并意图；返回 `pass` / `revise` / `waiting` / `merged` / `closed`。 |
+| `pr-merge` | 重新校验 head/判决/CI/thread/策略后以 merge commit 合并；竞争或外部合并会被重新分类。 |
+| `pr-request-changes` | 把 GitHub 阻塞反馈按评论/review id 去重写回同一需求，回到 `engineering-ready`。 |
 | `integrate` | 仅 local fallback：本地 merged / 冲突自动 abort 后 revise。 |
 | `recover-integration` | 仅异常兜底：操作者已手工恢复 Git 后，`decision:resolved\|aborted`、note；不在主图。 |
 | `cleanup` | 默认 `after-verified-merge` 自动强删已合并 worktree，并删除本地需求分支；`retain` 是显式例外。 |
+| `migrate` | v3 store 显式升级到 v4；默认 dry-run，`apply:true` 才写盘。 |
 | `status` / `inspect` | `{dataRoot}` / item envelope；有界业务状态与引用。 |
 
 ## 验证与限制

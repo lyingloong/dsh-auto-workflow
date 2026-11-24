@@ -6,9 +6,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const directories = ['requirements', 'seeds', 'artifacts', 'reviews', 'worktrees', 'locks'];
 const pendingStatuses = new Set(['queued', 'planning', 'intake', 'requirement-pending', 'requirement-revision', 'ready', 'preparing', 'engineering-ready', 'engineering']);
-const storeVersion = 3;
+const storeVersion = 4;
 const defaultMaxMiningSeeds = 3;
 const defaultStaleClaimMs = 1_800_000;
+const mergePolicies = ['comment', 'auto', 'label'];
 
 /** Baseline discovery directions; actual requirements are still model-proposed. */
 export const baselineSeeds = Object.freeze([
@@ -88,11 +89,11 @@ function newSeedRecord({ id, title, evidence, tags, origin, category, relatedReq
 
 export class DevelopmentStore {
   constructor(config) { this.config = config; this.root = config.dataRoot; }
-  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'pull-request', prRemote = 'origin', selfMergeAfterMs = 300_000, maxMiningSeeds = defaultMaxMiningSeeds, staleClaimMs = defaultStaleClaimMs }) {
+  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'pull-request', prRemote = 'origin', mergePolicy = 'comment', maxMiningSeeds = defaultMaxMiningSeeds, staleClaimMs = defaultStaleClaimMs }) {
     dataRoot = absolute(dataRoot, 'dataRoot'); repoRoot = await realpath(absolute(repoRoot, 'repoRoot'));
     if (!['retain', 'after-verified-merge'].includes(cleanupPolicy)) throw new Error('Invalid cleanup policy');
     if (!['local', 'pull-request'].includes(integrationMode)) throw new Error('Invalid integration mode');
-    if (!Number.isInteger(selfMergeAfterMs) || selfMergeAfterMs < 0 || selfMergeAfterMs > 86_400_000) throw new Error('Invalid self-merge delay');
+    if (!mergePolicies.includes(mergePolicy)) throw new Error('Invalid merge policy');
     if (!Number.isInteger(maxMiningSeeds) || maxMiningSeeds < 1 || maxMiningSeeds > 100) throw new Error('Invalid max mining seeds');
     if (!Number.isInteger(staleClaimMs) || staleClaimMs < 60_000 || staleClaimMs > 604_800_000) throw new Error('Invalid stale claim age');
     if (typeof prRemote !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(prRemote)) throw new Error('Invalid PR remote');
@@ -101,27 +102,63 @@ export class DevelopmentStore {
     if ((await lstat(dataRoot)).isSymbolicLink() || path.resolve(await realpath(dataRoot)) !== dataRoot) throw new Error('Business root must be canonical, not a symlink');
     const existing = await optionalJSON(path.join(dataRoot, 'config.json'));
     if (existing) {
-      if (existing.version !== storeVersion) throw new Error(`Unsupported business store version ${existing.version}; create a new dataRoot`);
-      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode || (existing.prRemote ?? 'origin') !== prRemote || (existing.selfMergeAfterMs ?? 300_000) !== selfMergeAfterMs || existing.maxMiningSeeds !== maxMiningSeeds || existing.staleClaimMs !== staleClaimMs) throw new Error('Store configuration is immutable');
+      if (existing.version !== storeVersion) throw new Error(`Unsupported business store version ${existing.version}; run the migrate stage or create a new dataRoot`);
+      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode || (existing.prRemote ?? 'origin') !== prRemote || (existing.mergePolicy ?? 'comment') !== mergePolicy || existing.maxMiningSeeds !== maxMiningSeeds || existing.staleClaimMs !== staleClaimMs) throw new Error('Store configuration is immutable');
       return DevelopmentStore.open(dataRoot);
     }
     for (const name of directories) await mkdir(path.join(dataRoot, name));
-    const config = { version: storeVersion, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode, prRemote, selfMergeAfterMs, maxMiningSeeds, staleClaimMs };
+    const config = { version: storeVersion, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode, prRemote, mergePolicy, maxMiningSeeds, staleClaimMs };
     await atomicJSON(path.join(dataRoot, 'config.json'), config);
     return new DevelopmentStore(config);
   }
   static async open(dataRoot) {
     dataRoot = absolute(dataRoot, 'dataRoot');
     const config = await readJSON(path.join(dataRoot, 'config.json'));
-    // Persisted seed lifecycle, rotation and claim fields changed; old roots are
-    // evidence, not something to reinterpret in place.
-    if (config.version !== storeVersion) throw new Error(`Unsupported business store version ${config.version}; create a new dataRoot`);
+    // Decision-first requirement fields and the GitHub merge policy changed the
+    // record shape. Old roots are evidence; migrate explicitly, never in place.
+    if (config.version !== storeVersion) throw new Error(`Unsupported business store version ${config.version}; run the migrate stage or create a new dataRoot`);
     if (config.dataRoot !== dataRoot || path.resolve(await realpath(dataRoot)) !== dataRoot || (await lstat(dataRoot)).isSymbolicLink()) throw new Error('Invalid business store root');
     for (const name of directories) if ((await lstat(path.join(dataRoot, name))).isSymbolicLink()) throw new Error('Business directories cannot be symlinks');
     absolute(config.repoRoot, 'repoRoot');
     if (!Number.isInteger(config.maxMiningSeeds) || config.maxMiningSeeds < 1 || config.maxMiningSeeds > 100 || !Number.isInteger(config.staleClaimMs) || config.staleClaimMs < 60_000 || config.staleClaimMs > 604_800_000) throw new Error('Invalid business store root');
     if (!['local', 'pull-request'].includes(config.integrationMode)) throw new Error('Unsupported legacy integration mode; use a new dataRoot');
+    if (!mergePolicies.includes(config.mergePolicy ?? 'comment')) throw new Error('Unsupported merge policy; run the migrate stage');
     return new DevelopmentStore(config);
+  }
+  /**
+   * Explicit v3 -> v4 migration. Requirement records gain the decision-first
+   * fields; seeds, artifacts and reviews keep their shape. Dry-run unless
+   * `apply` is true, so an old root stays evidence rather than being rewritten
+   * silently.
+   */
+  static async migrate({ dataRoot, apply = false } = {}) {
+    dataRoot = absolute(dataRoot, 'dataRoot');
+    const config = await readJSON(path.join(dataRoot, 'config.json'));
+    if (config.version === storeVersion) return { version: storeVersion, migrated: 0, requirements: [], applied: false };
+    if (config.version !== 3) throw new Error(`Unsupported business store version ${config.version}; only v3 can migrate`);
+    const requirements = [];
+    const names = (await readdir(path.join(dataRoot, 'requirements'))).filter(name => /^req-[a-z0-9][a-z0-9_-]{0,63}\.json$/.test(name));
+    for (const name of names) {
+      const file = path.join(dataRoot, 'requirements', name);
+      const raw = await readJSON(file);
+      const evidence = typeof raw.evidence === 'string' ? raw.evidence : typeof raw.description === 'string' ? raw.description : '';
+      const record = {
+        ...raw,
+        summary: typeof raw.summary === 'string' && raw.summary.trim() ? raw.summary : decisionSummary(evidence),
+        why: Array.isArray(raw.why) ? raw.why : [],
+        acceptance: Array.isArray(raw.acceptance) ? raw.acceptance : [],
+        evidence,
+      };
+      delete record.description;
+      requirements.push({ id: raw.id, file, record });
+    }
+    if (apply) {
+      for (const entry of requirements) await atomicJSON(entry.file, entry.record);
+      const next = { ...config, version: storeVersion, mergePolicy: config.mergePolicy ?? 'comment' };
+      delete next.selfMergeAfterMs;
+      await atomicJSON(path.join(dataRoot, 'config.json'), next);
+    }
+    return { version: storeVersion, migrated: requirements.length, requirements: requirements.map(entry => entry.id), applied: Boolean(apply) };
   }
   static async fromRef(dataRef) {
     dataRef = absolute(dataRef, 'dataRef');
@@ -190,7 +227,11 @@ export class DevelopmentStore {
     const linkedSeed = spec.source === 'mined' ? seedId(spec.seedId) : null;
     const item = {
       ...(previous ?? {}), id, source: spec.source, seedId: linkedSeed,
-      title: text(spec.title, 'title', 500), description: text(spec.description, 'description'),
+      title: text(spec.title, 'title', 500),
+      summary: text(spec.summary, 'summary', 1000),
+      why: bullets(spec.why ?? [], 'why', 6, 300),
+      acceptance: bullets(spec.acceptance ?? [], 'acceptance', 8, 300),
+      evidence: text(spec.evidence, 'evidence', 12_000),
       tags: normalizeTags(spec.tags), priority, risk: risk(spec.risk ?? 'low'),
       revision: (previous?.revision ?? 0) + 1, order: previous?.order ?? await this.nextOrder(),
       createdAt: previous?.createdAt ?? new Date().toISOString(), status: 'queued',
@@ -235,8 +276,9 @@ export class DevelopmentStore {
       if (await optionalJSON(await this.checkedFile(this.ref(target)))) throw new Error('Intake requirement already exists');
       const words = String(raw ?? '').trim();
       const title = words.split(/\r?\n/)[0].slice(0, 200).trim() || 'Untitled intake';
+      const evidence = words || 'Untitled intake';
       const item = await this.upsertUnlocked({
-        id: target, source: 'user', title, description: words || 'Untitled intake', risk: 'mid', priority: 0, tags: tags ?? [],
+        id: target, source: 'user', title, summary: decisionSummary(evidence), why: [], acceptance: [], evidence, risk: 'mid', priority: 0, tags: tags ?? [],
       });
       item.status = 'planning';
       item.claimId = randomUUID();
@@ -258,7 +300,10 @@ export class DevelopmentStore {
       if (item.status !== 'planning' || item.needsPlanning !== true) throw new Error('Requirement is not waiting for an intake plan');
       if (requirement && typeof requirement === 'object') {
         item.title = text(requirement.title, 'title', 500);
-        item.description = text(requirement.description, 'description');
+        item.summary = text(requirement.summary ?? item.summary, 'summary', 1000);
+        item.why = bullets(requirement.why ?? [], 'why', 6, 300);
+        item.acceptance = bullets(requirement.acceptance ?? [], 'acceptance', 8, 300);
+        item.evidence = text(requirement.evidence ?? item.evidence, 'evidence', 12_000);
         item.risk = risk(requirement.risk ?? 'mid');
         item.tags = normalizeTags(requirement.tags ?? item.tags);
         item.intakeReason = null;
@@ -551,7 +596,11 @@ export class DevelopmentStore {
   async reviseRequirement(id, claimId, proposal) {
     return this.mutate(id, claimId, item => {
       if (item.status !== 'requirement-revision' || proposal.expectedRevision !== item.revision) throw new Error('Stale or unrequested requirement revision');
-      item.title = text(proposal.title, 'title', 500); item.description = text(proposal.description, 'description');
+      item.title = text(proposal.title, 'title', 500);
+      item.summary = text(proposal.summary ?? item.summary, 'summary', 1000);
+      item.why = bullets(proposal.why ?? [], 'why', 6, 300);
+      item.acceptance = bullets(proposal.acceptance ?? [], 'acceptance', 8, 300);
+      item.evidence = text(proposal.evidence ?? item.evidence, 'evidence', 12_000);
       item.risk = risk(proposal.risk); item.tags = normalizeTags(proposal.tags ?? item.tags);
       item.revision++; item.requirementApproval = null;
       // Deliberately preserve id, order, claim and worktreePath.
@@ -572,6 +621,14 @@ export class DevelopmentStore {
 export function assertClaim(item, claimId) { if (!claimId || claimId !== item.claimId) throw new Error('Stale/missing requirement claim'); }
 export function compareRequirements(a, b) { return (a.source === 'user' ? 0 : 1) - (b.source === 'user' ? 0 : 1) || a.priority - b.priority || a.order - b.order || a.id.localeCompare(b.id); }
 function normalizeTags(tags = []) { if (!Array.isArray(tags) || tags.length > 30) throw new Error('Invalid tags'); return tags.map(tag => text(tag, 'tag', 100)); }
+function bullets(values, name, max, length) {
+  if (!Array.isArray(values) || values.length > max) throw new Error(`Invalid ${name}`);
+  return values.map(value => text(value, name, length));
+}
+function decisionSummary(value) {
+  const compact = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return compact ? compact.slice(0, 300) : 'Untitled intake';
+}
 function normalizeTitle(value) { return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' '); }
 function intakeSeedId(title, existing) {
   const base = String(title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || randomUUID().slice(0, 8);

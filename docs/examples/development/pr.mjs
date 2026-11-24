@@ -1,15 +1,16 @@
 /** GitHub pull-request execution plane. The driver owns the workflow; this
- * module only pushes the requirement branch, opens/updates its one draft PR,
- * polls that exact PR, and verifies an external merge. It never merges. */
+ * module pushes the requirement branch, opens/updates its one draft PR, watches
+ * authorized GitHub feedback on the current head, and merges only after the
+ * configured policy is satisfied. It never guesses a verdict from prose. */
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { git, checkedWorktree, targetReady, checkApproval, ancestor, commitId, clean } from './worktrees.mjs';
+import { git, checkedWorktree, targetReady, ancestor, commitId, clean } from './worktrees.mjs';
 import { gh, ghJson, repoCoordinates } from './github.mjs';
-import { REVIEW_LABEL, APPROVED_LABEL, REJECTED_LABEL, REQUIREMENT_LABELS } from './requirement-review.mjs';
+import { redactForPublic, REVIEW_LABEL, APPROVED_LABEL, REJECTED_LABEL, REQUIREMENT_LABELS } from './requirement-review.mjs';
+import { MERGE_LABEL, MERGE_INTENT_LABEL, evaluateFeedback } from './pr-feedback.mjs';
 
-const PR_FIELDS = 'number,url,state,isDraft,headRefOid,mergeCommit,mergedAt,closed,reviewDecision,body,statusCheckRollup,comments,reviews';
+const PR_FIELDS = 'number,url,state,isDraft,headRefOid,mergeCommit,mergedAt,closed,reviewDecision,body,labels,statusCheckRollup';
 const STAGES = new Set(['implementing', 'verifying', 'reviewing', 'repairing', 'merge-ready', 'blocked']);
-const MERGE_LABEL = 'workflow:merge-ready';
 const TEMPLATE_PATH = '.github/pull_request_template.md';
 
 async function viewPr(store, number) {
@@ -34,8 +35,6 @@ function normalisePr(value) {
     reviewDecision: value.reviewDecision ?? null,
     body: typeof value.body === 'string' ? value.body : '',
     checks: Array.isArray(value.statusCheckRollup) ? value.statusCheckRollup : [],
-    comments: Array.isArray(value.comments) ? value.comments : [],
-    reviews: Array.isArray(value.reviews) ? value.reviews : [],
     labels: Array.isArray(value.labels) ? value.labels.map(label => typeof label === 'string' ? label : label.name).filter(Boolean) : [],
     updatedAt: new Date().toISOString(),
   };
@@ -90,10 +89,6 @@ function protocolBody(markdown, state) {
   return `${renderProtocol(state)}\n\n${stripProtocol(markdown)}`;
 }
 
-function roleHeader(item, role) {
-  return `[role=${role}] [task=${item.id}] [head=${String(item.implementation?.commit ?? '').slice(0, 12)}]`;
-}
-
 function checkState(checks) {
   if (!Array.isArray(checks) || checks.length === 0) return 'none';
   let pending = false;
@@ -105,39 +100,38 @@ function checkState(checks) {
   return pending ? 'pending' : 'pass';
 }
 
-function validateRoleComments(item, head, comments = [], reviews = []) {
-  const errors = [];
-  const header = /\[role=(captain|engineer|verifier|reviewer|codex|workflow)\]\s*\[task=([^\]]+)\]\s*\[head=([0-9a-f]{12,64})\]/i;
-  const topLevel = /^\s*\[(verify|review|repair|merge-gate)\]/m;
-  for (const entry of [...comments, ...reviews]) {
-    const body = String(entry?.body ?? '');
-    if (!topLevel.test(body)) continue;
-    const match = body.match(header);
-    if (!match) { errors.push('top-level comment is missing a role/task/head header'); continue; }
-    if (match[2] !== item.id) errors.push(`comment task ${match[2]} does not match ${item.id}`);
-    if (!String(head).startsWith(match[3].toLowerCase())) errors.push(`comment head ${match[3]} does not match ${String(head).slice(0, 12)}`);
-  }
-  return [...new Set(errors)];
-}
-
 function prTitle(item) {
   return `${item.id}: ${item.title}`.slice(0, 240);
 }
 
-function basicBody(item) {
+function mergeDecisionInstruction(policy) {
+  if (policy === 'auto') return 'This PR merges automatically with a merge commit once verification passes; no board action is needed.';
+  if (policy === 'label') return 'Add the `workflow:merge` label on GitHub to merge this PR with a merge commit; remove it to stop.';
+  return 'Comment `@workflow merge` on this PR (authorized collaborators only) to merge it with a merge commit; `@workflow stop` cancels.';
+}
+
+function basicBody(item, policy) {
   const implementation = item.implementation || {};
   return [
-    '## Requirement', item.title, '', item.description, '',
-    '## Implementation', implementation.summary || 'Implementation summary is not available yet.', '',
-    '## Verification', implementation.verification || 'No verification evidence recorded yet.', '',
-    '## Immutable binding', `- requirement: \`${item.id}\``, `- commit: \`${implementation.commit || 'not snapshotted'}\``, `- artifact: \`${implementation.artifactRef || 'not snapshotted'}\``, '',
-    '## Review', item.reviews?.length ? 'Internal review has not passed yet; this is a draft PR.' : 'No review recorded yet.', '',
-    '> Workflow-managed PR. Merge-ready is granted only after the state block, CI and review-thread gate pass.',
+    '## Change', '', redactForPublic(implementation.summary || 'Implementation summary is not available yet.'), '',
+    '## Verification', '', '```', redactForPublic(implementation.verification || 'No verification evidence recorded yet.'), '```', '',
+    '## Review verdict', '', 'Pending internal review; this is a draft PR.', '',
+    '## Merge decision', '', mergeDecisionInstruction(policy), '',
+    '<details>',
+    `<summary>Requirement \`${item.id}\` r${item.revision}</summary>`,
+    '',
+    `**${item.title}**`,
+    '',
+    redactForPublic(item.summary),
+    '',
+    redactForPublic(item.evidence),
+    '',
+    '</details>',
   ].join('\n');
 }
 
-function prBody(item, state = protocolFor(item)) {
-  return protocolBody(item.brief?.markdown || basicBody(item), state);
+function prBody(item, state, policy) {
+  return protocolBody(item.brief?.markdown || basicBody(item, policy), state);
 }
 
 async function unresolvedThreads(store, number) {
@@ -160,49 +154,102 @@ async function setMergeLabel(store, number, wanted) {
 }
 
 async function writeProtocol(store, item, pr, state) {
-  const markdown = item.brief?.markdown || stripProtocol(pr.body) || basicBody(item);
+  const markdown = item.brief?.markdown || stripProtocol(pr.body) || basicBody(item, store.config.mergePolicy);
   const body = protocolBody(markdown, state);
   await gh(store.config.repoRoot, 'pr', 'edit', String(pr.number), '--body', body);
   item.pr = { ...item.pr, ...pr, protocol: state, body };
   return item.pr;
 }
 
-async function evaluateGate(store, item, pr) {
+async function restComments(store, number) {
+  const { owner, name } = await repoCoordinates(store);
+  return ghJson(store.config.repoRoot, ['api', `repos/${owner}/${name}/issues/${number}/comments?per_page=100`]);
+}
+
+async function restReviews(store, number) {
+  const { owner, name } = await repoCoordinates(store);
+  return ghJson(store.config.repoRoot, ['api', `repos/${owner}/${name}/pulls/${number}/reviews?per_page=100`]);
+}
+
+/** Review authors have no author_association field in the REST review shape. */
+async function authorizedReviewers(store, reviews) {
+  const { owner, name } = await repoCoordinates(store);
+  const authorized = new Set();
+  for (const review of reviews) {
+    const login = review?.user?.login;
+    if (!login || authorized.has(login)) continue;
+    try {
+      const value = await ghJson(store.config.repoRoot, ['api', `repos/${owner}/${name}/collaborators/${encodeURIComponent(login)}/permission`]);
+      if (value?.permission && value.permission !== 'none') authorized.add(login);
+    } catch {
+      // An unreadable permission is not evidence of authority.
+    }
+  }
+  return authorized;
+}
+
+async function feedbackFor(store, item, pr) {
+  const [comments, reviews, unresolved] = await Promise.all([
+    restComments(store, pr.number),
+    restReviews(store, pr.number),
+    unresolvedThreads(store, pr.number),
+  ]);
+  const reviewers = await authorizedReviewers(store, reviews);
+  const windowStart = item.pr?.feedbackWindowStart ?? item.pr?.readyAt ?? new Date(0).toISOString();
+  return evaluateFeedback({
+    head: pr.headRefOid,
+    windowStart,
+    comments,
+    reviews,
+    authorizedReviewers: reviewers,
+    reviewDecision: pr.reviewDecision,
+    ci: checkState(pr.checks),
+    unresolved,
+    mergePolicy: store.config.mergePolicy,
+    labels: pr.labels,
+  });
+}
+
+function waitingReason(feedback) {
+  if (feedback.verdict === 'revise') return 'Feedback requested changes';
+  if (feedback.ci === 'pending') return 'CI is still pending';
+  if (feedback.ci === 'fail') return 'CI failed';
+  if (feedback.verdict === 'pass' && !feedback.mergeSatisfied) return 'Merge intent is not recorded yet';
+  return 'No authorized verdict yet';
+}
+
+/** Persist the protocol block and merge-ready label for the current decision. */
+async function syncProtocol(store, item, pr, feedback) {
   const previous = item.pr?.protocol ?? protocolFor(item);
   const head = pr.headRefOid ?? previous.head;
-  const base = store.config.baseBranch;
-  const ci = checkState(pr.checks);
-  const unresolved = await unresolvedThreads(store, pr.number);
-  const commentErrors = validateRoleComments(item, head, pr.comments, pr.reviews);
-  const latestReview = item.reviews?.at(-1);
-  const reviewed = latestReview?.decision === 'pass' && latestReview.commit === head;
-  let protocol = { ...previous, task: item.id, head, base, ci };
+  const protocol = { ...previous, task: item.id, head, base: store.config.baseBranch, ci: feedback.ci };
   if (previous.head && previous.head !== head) {
+    // A pushed head invalidates the old window: only feedback after it counts.
+    item.pr.feedbackWindowStart = new Date().toISOString();
     protocol.stage = 'reviewing';
     protocol.next = 'review';
     protocol.order = '';
-  }
-  if (!reviewed) {
-    protocol.stage = 'reviewing';
-    protocol.next = 'review';
-  } else if (commentErrors.length) {
-    protocol.stage = 'blocked';
-    protocol.next = 'fix-comment-headers';
-  } else if (ci === 'fail' || unresolved > 0) {
+  } else if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
     protocol.stage = 'blocked';
     protocol.next = 'repair';
-  } else if (ci === 'pending') {
+  } else if (feedback.verdict === 'pass' && ['pass', 'none'].includes(feedback.ci) && feedback.mergeSatisfied) {
+    protocol.stage = 'merge-ready';
+    protocol.next = 'merge';
+    if (!protocol.order) protocol.order = String(await store.nextOrder()).padStart(4, '0');
+  } else if (feedback.ci === 'pending') {
+    protocol.stage = 'verifying';
+    protocol.next = 'check';
+  } else if (feedback.verdict === 'pass') {
     protocol.stage = 'verifying';
     protocol.next = 'check';
   } else {
-    protocol.stage = 'merge-ready';
-    protocol.next = 'codex-merge';
-    if (!protocol.order) protocol.order = String(await store.nextOrder()).padStart(4, '0');
+    protocol.stage = 'reviewing';
+    protocol.next = 'review';
   }
   await writeProtocol(store, item, pr, protocol);
   await setMergeLabel(store, pr.number, protocol.stage === 'merge-ready');
   item.pr.protocol = protocol;
-  return { protocol, ci, unresolved, commentErrors };
+  return protocol;
 }
 
 async function updatePr(store, item, { create = false, state } = {}) {
@@ -210,7 +257,7 @@ async function updatePr(store, item, { create = false, state } = {}) {
   if (!branch) throw new Error('Requirement has no branch for PR');
   const title = prTitle(item);
   const protocol = state ?? protocolFor(item);
-  const body = prBody(item, protocol);
+  const body = prBody(item, protocol, store.config.mergePolicy);
   let pr = item.pr ? await viewPr(store, item.pr.number) : null;
   if (!pr) pr = await findPr(store, branch);
   if (!pr) {
@@ -285,16 +332,17 @@ export async function ready(store, id, claimId) {
       order: item.pr.protocol?.order ?? '',
       ci: 'pending',
     });
-    item.pr = { ...item.pr, protocol: state };
+    item.pr = { ...item.pr, protocol: state, feedbackWindowStart: new Date().toISOString() };
     await updatePr(store, item, { state });
     await setMergeLabel(store, item.pr.number, false);
     item.pr.readyAt = new Date().toISOString();
+    item.pr.feedbackWindowStart = item.pr.feedbackWindowStart ?? item.pr.readyAt;
     item.pr.protocol = state;
     return { item, outcome: 'complete', pr: item.pr };
   }), 'integration');
 }
 
-async function syncBase(store) {
+async function targetReadyForMerge(store) {
   await targetReady(store);
   await git(store.config.repoRoot, 'fetch', store.config.prRemote || 'origin', store.config.baseBranch);
   await git(store.config.repoRoot, 'merge', '--ff-only', `${store.config.prRemote || 'origin'}/${store.config.baseBranch}`);
@@ -314,82 +362,152 @@ async function verifyReviewedCommit(store, item) {
 
 async function verifyExternalMerge(store, item) {
   const commit = await verifyReviewedCommit(store, item);
-  await syncBase(store);
+  await targetReadyForMerge(store);
   if (!await ancestor(store.config.repoRoot, commitId(commit))) {
     throw new Error('PR is marked merged but the approved commit is not in the base branch. The repository may use squash/rebase merges; this workflow requires a merge commit.');
   }
   item.status = 'merged';
   item.integration = {
     state: 'verified',
-    mechanism: item.pr.selfMergedByWorkflow ? 'self-merge' : 'external-pr',
+    mechanism: item.pr.mergeDecision ? 'workflow-merge' : 'external-pr',
     pr: item.pr,
-    mergeCommit: commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD')),
+    mergeCommit: item.pr.mergeDecision?.mergeCommit ?? commitId(await git(store.config.repoRoot, 'rev-parse', 'HEAD')),
     verifiedAt: new Date().toISOString(),
   };
   // A merged requirement is terminal: its seed returns to the rotation.
   await store.settleSeedForRequirementUnlocked(item);
 }
 
-export async function check(store, id, claimId) {
+/**
+ * Poll the PR on GitHub. Returns `pass` only when the current head has an
+ * authorized pass verdict, green CI, no unresolved threads and the configured
+ * merge intent. Any blocking feedback returns `revise`; everything else waits.
+ */
+export async function watch(store, id, claimId) {
   return store.locked(() => store.mutate(id, claimId, async item => {
+    if (!['human-pending', 'approved'].includes(item.status)) throw new Error('PR watch requires a reviewed requirement');
     if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
     const pr = normalisePr(await viewPr(store, item.pr.number));
     item.pr = { ...item.pr, ...pr };
     if (pr.state === 'MERGED') {
       await setMergeLabel(store, pr.number, false);
       await verifyExternalMerge(store, item);
-      return { item, outcome: 'merged', pr: item.pr };
+      return { item, outcome: 'merged', pr, feedback: null };
     }
     if (pr.state === 'CLOSED') {
-      item.status = 'engineering-ready';
-      item.approval = null;
-      item.integration = { state: 'pr-closed', pr: item.pr, checkedAt: new Date().toISOString() };
-      item.feedback.push({ scope: 'integration', artifactRef: item.implementation?.artifactRef, note: 'PR was closed without merge; return to engineering. Reopen or update the same PR after new commits.' });
       await setMergeLabel(store, pr.number, false);
-      return { item, outcome: 'closed', pr: item.pr };
+      return { item, outcome: 'closed', pr, feedback: null, reason: 'PR was closed without merge' };
     }
-    // External reviewers may merge the ready PR at any time. Only after the
-    // gate passes and the grace period expires do we request self-merge approval.
-    const { protocol } = await evaluateGate(store, item, pr);
-    const readyAt = Date.parse(item.pr.readyAt ?? '');
-    if (protocol.stage === 'merge-ready' && Number.isFinite(readyAt) && Date.now() - readyAt >= store.config.selfMergeAfterMs) {
-      return { item, outcome: 'approval-needed', pr: item.pr };
-    }
-    return { item, outcome: 'waiting', pr: item.pr };
+    if (pr.isDraft) return { item, outcome: 'waiting', pr, feedback: null, reason: 'PR is still a draft' };
+    const feedback = await feedbackFor(store, item, pr);
+    item.pr.feedback = {
+      head: feedback.head, verdict: feedback.verdict, decision: feedback.decision,
+      mergeIntent: feedback.mergeIntent, mergeSatisfied: feedback.mergeSatisfied,
+      ci: feedback.ci, unresolved: feedback.unresolved, checkedAt: new Date().toISOString(),
+    };
+    const protocol = await syncProtocol(store, item, pr, feedback);
+    const outcome = feedback.verdict === 'revise' || feedback.unresolved > 0
+      ? 'revise'
+      : protocol.stage === 'merge-ready' ? 'pass' : 'waiting';
+    return { item, outcome, pr, feedback, reason: outcome === 'waiting' ? waitingReason(feedback) : null };
   }), 'integration');
 }
 
-export async function selfMerge(store, id, claimId) {
+/**
+ * Apply blocking GitHub feedback to the existing branch/worktree/PR. The packet
+ * continues into engineering on the same claim.
+ */
+export async function requestChanges(store, id, claimId, { feedback = null, reason = null } = {}) {
   return store.locked(() => store.mutate(id, claimId, async item => {
-    if (item.status !== 'approved') throw new Error('Self-merge requires an explicit Human approval');
-    await checkApproval(store, item);
+    const decision = feedback?.decision ?? null;
+    const key = decision ? `${decision.kind}:${decision.id}` : `closed:${item.pr?.number ?? item.id}`;
+    if (item.feedback.some(entry => entry.key === key)) return { item, outcome: 'complete' };
+    if (!['human-pending', 'approved'].includes(item.status)) throw new Error('PR feedback can only rework a reviewed requirement');
+    const note = reason ?? (decision?.verdict === 'revise' ? `GitHub review requested changes (${key})` : 'GitHub feedback requires rework');
+    item.feedback.push({ scope: 'pr', key, head: decision?.head ?? item.pr?.headRefOid ?? null, decision: decision?.verdict ?? 'revise', actor: decision?.actor ?? 'github', note, at: new Date().toISOString() });
+    item.approval = null;
+    item.status = 'engineering-ready';
+    item.pr = { ...(item.pr ?? {}), feedback: { ...(item.pr?.feedback ?? {}), last: feedback ?? null, lastAt: new Date().toISOString() } };
+    if (item.pr.number) await setMergeLabel(store, item.pr.number, false);
+    return { item, outcome: 'complete', feedback };
+  }), 'integration');
+}
+
+/**
+ * Merge the current head when the policy is satisfied. The PR is re-read
+ * immediately before merging; a lost race is re-classified instead of replayed.
+ */
+export async function merge(store, id, claimId) {
+  return store.locked(() => store.mutate(id, claimId, async item => {
+    if (!['human-pending', 'approved'].includes(item.status)) throw new Error('PR merge requires a reviewed requirement');
     if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
-    if (item.pr.protocol?.stage !== 'merge-ready') throw new Error('Self-merge requires a merge-ready PR');
     let pr = normalisePr(await viewPr(store, item.pr.number));
-    if (!pr.labels.includes(MERGE_LABEL)) throw new Error(`Self-merge requires the ${MERGE_LABEL} label`);
+    item.pr = { ...item.pr, ...pr };
     if (pr.state === 'MERGED') {
-      item.pr = { ...item.pr, ...pr };
+      await setMergeLabel(store, pr.number, false);
       await verifyExternalMerge(store, item);
-      return { item, outcome: 'merged', pr: item.pr };
+      return { item, outcome: 'merged', pr, feedback: null };
     }
-    if (pr.state === 'CLOSED') throw new Error('PR is closed; rework before self-merge');
-    try { await gh(store.config.repoRoot, 'pr', 'merge', String(pr.number), '--merge'); }
-    catch (error) {
-      // An external merge can win this race; re-read before failing the packet.
-      pr = normalisePr(await viewPr(store, item.pr.number));
-      item.pr = { ...item.pr, ...pr };
-      if (pr.state !== 'MERGED') throw error;
-      await verifyExternalMerge(store, item);
-      return { item, outcome: 'merged', pr: item.pr };
+    if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback: null, reason: 'PR was closed before merge' };
+    let feedback = await feedbackFor(store, item, pr);
+    if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
+      await syncProtocol(store, item, pr, feedback);
+      return { item, outcome: 'revise', pr, feedback };
     }
-    item.pr.selfMergedByWorkflow = true;
-    item.pr.selfMergeAt = new Date().toISOString();
+    if (feedback.verdict !== 'pass' || !['pass', 'none'].includes(feedback.ci) || !feedback.mergeSatisfied) {
+      await syncProtocol(store, item, pr, feedback);
+      return { item, outcome: 'waiting', pr, feedback, reason: waitingReason(feedback) };
+    }
+    await verifyReviewedCommit(store, item);
+    // Re-read after the slow verification so a comment or push during it cannot
+    // slip past the gate; the merge must still match this exact head.
     pr = normalisePr(await viewPr(store, item.pr.number));
     item.pr = { ...item.pr, ...pr };
-    if (pr.state !== 'MERGED') throw new Error('Self-merge command returned without a merged PR');
+    if (pr.state === 'MERGED') {
+      await setMergeLabel(store, pr.number, false);
+      await verifyExternalMerge(store, item);
+      return { item, outcome: 'merged', pr, feedback };
+    }
+    if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback, reason: 'PR was closed during merge verification' };
+    feedback = await feedbackFor(store, item, pr);
+    if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
+      await syncProtocol(store, item, pr, feedback);
+      return { item, outcome: 'revise', pr, feedback };
+    }
+    if (feedback.verdict !== 'pass' || !['pass', 'none'].includes(feedback.ci) || !feedback.mergeSatisfied) {
+      await syncProtocol(store, item, pr, feedback);
+      return { item, outcome: 'waiting', pr, feedback, reason: waitingReason(feedback) };
+    }
+    try {
+      await gh(store.config.repoRoot, 'pr', 'merge', String(pr.number), '--merge');
+    } catch (error) {
+      // An external merge can win the race; re-read before failing the packet.
+      const after = normalisePr(await viewPr(store, item.pr.number));
+      item.pr = { ...item.pr, ...after };
+      if (after.state === 'MERGED') {
+        await setMergeLabel(store, after.number, false);
+        await verifyExternalMerge(store, item);
+        return { item, outcome: 'merged', pr: after, feedback };
+      }
+      if (after.state === 'CLOSED') return { item, outcome: 'revise', pr: after, feedback, reason: 'PR was closed during merge' };
+      throw error;
+    }
+    pr = normalisePr(await viewPr(store, item.pr.number));
+    item.pr = { ...item.pr, ...pr };
+    if (pr.state !== 'MERGED') return { item, outcome: 'waiting', pr, feedback, reason: 'GitHub did not report the PR as merged yet' };
+    item.pr.mergeDecision = {
+      policy: store.config.mergePolicy,
+      verdict: feedback.verdict,
+      decision: feedback.decision,
+      mergeIntent: feedback.mergeIntent,
+      head: feedback.head,
+      mergedAt: new Date().toISOString(),
+      mergeCommit: null,
+    };
     await setMergeLabel(store, pr.number, false);
     await verifyExternalMerge(store, item);
-    return { item, outcome: 'merged', pr: item.pr };
+    item.pr.mergeDecision.mergeCommit = item.integration?.mergeCommit ?? null;
+    return { item, outcome: 'merged', pr, feedback };
   }), 'integration');
 }
 
@@ -405,9 +523,11 @@ function templateBody() {
     'ci=pending',
     '-->',
     '',
-    '## Summary',
+    '## Change',
     '',
     '## Verification',
+    '',
+    '## Merge decision',
     '',
   ].join('\n');
 }
@@ -456,6 +576,7 @@ export async function initPr(store, { apply = false, manualGate = false } = {}) 
 
   const labels = [
     { name: MERGE_LABEL, color: '0E8A16', description: 'Verified by dsh-auto-workflow' },
+    { name: MERGE_INTENT_LABEL, color: '1D76DB', description: 'Merge this PR with a merge commit (label policy)' },
     { name: REVIEW_LABEL, color: 'FBCA04', description: 'Requirement waiting for a maintainer decision' },
     { name: APPROVED_LABEL, color: '0E8A16', description: 'Requirement review approved' },
     { name: REJECTED_LABEL, color: 'B60205', description: 'Requirement review rejected' },
@@ -469,9 +590,9 @@ export async function initPr(store, { apply = false, manualGate = false } = {}) 
       catch { missing.push(label); }
     }
   }
-  const mergeMissing = missing.some(label => label.name === MERGE_LABEL);
+  const mergeMissing = missing.some(label => label.name === MERGE_LABEL || label.name === MERGE_INTENT_LABEL);
   const requirementMissing = missing.filter(label => REQUIREMENT_LABELS.includes(label.name));
-  add('merge-label', Boolean(coordinates) && !mergeMissing, !coordinates ? 'repository coordinates unavailable' : mergeMissing ? `run with apply=true to create ${MERGE_LABEL}` : MERGE_LABEL);
+  add('merge-label', Boolean(coordinates) && !mergeMissing, !coordinates ? 'repository coordinates unavailable' : mergeMissing ? `run with apply=true to create ${MERGE_LABEL} and ${MERGE_INTENT_LABEL}` : `${MERGE_LABEL}, ${MERGE_INTENT_LABEL}`);
   add('requirement-labels', Boolean(coordinates) && requirementMissing.length === 0, !coordinates ? 'repository coordinates unavailable' : requirementMissing.length ? `run with apply=true to create ${requirementMissing.map(label => label.name).join(', ')}` : REQUIREMENT_LABELS.join(', '));
 
   const templatePath = path.join(repo, TEMPLATE_PATH);

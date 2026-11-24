@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 需求 issue 与 PR body 改为 decision-first 模板：首屏是 What / Why / Acceptance / Decision 或 Change / Verification / Review verdict / Merge decision，完整证据折叠在 `<details>`；需求记录升到 store `v4`（summary/why/acceptance/evidence），旧 v3 通过 `driver migrate` 显式升级，保留审计字段。（#33）
+- PR 合并决定移到 GitHub：`pr-watch` 读取协作者 `[verdict=pass|revise]` 评论、正式 review、未 resolve thread、CI 和 `@workflow merge`（`mergePolicy` 默认 `comment`，也支持 `auto`/`label`）；`pr-merge` 重新校验后用 merge commit 合并，阻塞反馈经 `pr-request-changes` 回到同一分支；PR 路径移除 `self-merge-human`/`merge-human` 看板 token，local fallback 保留看板 Human。（#32）
+
 - agent 节点改用宿主结构化输出契约：provider 声明 `outputSchema` 能力时（内置 `spawn` 支持），子 agent 通过 `structured_output` 工具提交 `{outcome, output}`，宿主按 schema 校验后返回 `SubagentResult.structured`；未提交或不支持时保留文本 JSON 协议。无效结果附带最终文本节选。（#31）
 
 - 新增图内 intake planner：`intake-record` → `intake-plan`（`reasoningEffort: low`）→ `intake-apply`，把宽泛用户请求固化为 1 条具体需求 + 0–3 个去重后的 seed。原文先以 `planning` 状态落盘（不可 claim、计入 backlog），planner 失败不丢输入；派生 seed 只进正常轮转、不自动开挖。（#28）

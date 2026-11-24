@@ -42,7 +42,7 @@ async function fixture(t, { materialize = false } = {}) {
   const store = await DevelopmentStore.create({ dataRoot: path.join(root, 'data'), repoRoot: repo, integrationMode: 'local' });
   return { root, repo, store };
 }
-const requirement = (id, extra = {}) => ({ id, source: 'user', title: id, description: `Audit ${id}`, risk: 'low', ...extra });
+const requirement = (id, extra = {}) => ({ id, source: 'user', title: id, summary: `Audit ${id}`, evidence: `Audit ${id}`, why: [], acceptance: [], risk: 'low', ...extra });
 async function prepared(store, id = 'req-audit') {
   await store.upsertRequirement(requirement(id));
   const [envelope] = await store.claimBatch(1);
@@ -119,10 +119,10 @@ const reviewReply = decision => ({ outcome: decision, output: { decision, summar
 test('audit coverage: complete production graph uses real command executor + model-text parser through all feedback loops and merge', { timeout: 60_000 }, async t => {
   const fx = await graphFixture(t, async args => {
     const { nodeId, input, calls } = args;
-    if (nodeId === 'miner') return { outcome: 'proposal', output: { proposal: { title: 'Audit mined', description: 'Concrete bounded behavior', risk: 'mid', priority: 2 } } };
+    if (nodeId === 'miner') return { outcome: 'proposal', output: { proposal: { title: 'Audit mined', summary: 'Concrete bounded behavior', evidence: 'Concrete bounded behavior', risk: 'mid', priority: 2 } } };
     if (nodeId === 'analyst-revise') {
       const item = JSON.parse(await readFile(input.dataRef, 'utf8'));
-      return { outcome: 'complete', output: { proposal: { expectedRevision: item.revision, title: 'Revised same item', description: 'Bounded to requested feedback', risk: 'mid' } } };
+      return { outcome: 'complete', output: { proposal: { expectedRevision: item.revision, title: 'Revised same item', summary: 'Bounded to requested feedback', evidence: 'Bounded to requested feedback', risk: 'mid' } } };
     }
     if (nodeId === 'engineer') return engineerReply(args);
     assert.equal(nodeId, 'reviewer');
@@ -252,7 +252,7 @@ test('audit regression: old requirement approval cannot approve a newer revision
   const number = published.output.github.number;
   await issueComment(state, number, '@workflow reject Narrow scope');
   assert.equal((await stage('check-requirement-issue', envelope)).outcome, 'rejected');
-  await stage('revise-proposal', { ...envelope, proposal: { expectedRevision: 1, title: 'Changed scope', description: 'Revision two not seen by the old approver', risk: 'high' } });
+  await stage('revise-proposal', { ...envelope, proposal: { expectedRevision: 1, title: 'Changed scope', summary: 'Revision two not seen by the old approver', evidence: 'Revision two not seen by the old approver', risk: 'high' } });
   await stage('route', envelope);
   assert.equal((await store.get(id)).revision, 2);
   // A decision stamped with revision 1 cannot approve revision 2.

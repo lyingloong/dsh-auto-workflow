@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, realpath, lstat } from 'node:fs/promises';
 import { DevelopmentStore, atomicJSON } from '../docs/examples/development/store.mjs';
 import { git, prepare, snapshot, recordReview, integrate, cleanup, mergeBrief } from '../docs/examples/development/worktrees.mjs';
-import { publish, ready, check, selfMerge, updateBody } from '../docs/examples/development/pr.mjs';
+import { publish, ready, watch, merge, requestChanges, updateBody } from '../docs/examples/development/pr.mjs';
 import { stage } from '../docs/examples/development/driver.mjs';
 import { normalizeDefinition } from '../src/definition.mjs';
 import { newRunState, enqueue, run, decide, waitingHumanTokens } from '../src/runtime.mjs';
@@ -35,8 +35,8 @@ async function withPullRequestFixture(t, { root, repo }, { readyMerges = true } 
   await git(repo, 'push', '-u', 'origin', 'main');
   return { remote, ...useFakeGh(t, root, { readyMerges }) };
 }
-const user = (id, extra = {}) => ({ id, source: 'user', title: id, description: `Implement ${id}`, risk: 'high', ...extra });
-const mined = (id, value = 'mid', extra = {}) => ({ id, source: 'mined', seedId: `seed-${id.slice(4)}`, title: id, description: `Mined ${id}`, risk: value, ...extra });
+const user = (id, extra = {}) => ({ id, source: 'user', title: id, summary: `Implement ${id}`, evidence: `Implement ${id}`, why: [], acceptance: [], risk: 'high', ...extra });
+const mined = (id, value = 'mid', extra = {}) => ({ id, source: 'mined', seedId: `seed-${id.slice(4)}`, title: id, summary: `Mined ${id}`, evidence: `Mined ${id}`, why: [], acceptance: [], risk: value, ...extra });
 async function prepared(store, id = 'req-one', spec = user(id)) {
   await store.upsertRequirement(spec);
   const [envelope] = await store.claimBatch(1);
@@ -78,7 +78,7 @@ async function pendingReview(store) {
   const [seed] = await store.claimSeeds(1);
   const requirement = await store.proposeSeed({
     seedId: 'seed-review', claimId: seed.claimId,
-    proposal: { title: 'Review me', description: 'Read C:\\Users\\private\\project and mail owner@example.com with ghp_abcdefghijklmnopqrstuvwxyz', risk: 'mid', priority: 2 },
+    proposal: { title: 'Review me', summary: 'Read C:\\Users\\private\\project and mail owner@example.com with ghp_abcdefghijklmnopqrstuvwxyz', evidence: 'Read C:\\Users\\private\\project and mail owner@example.com with ghp_abcdefghijklmnopqrstuvwxyz', risk: 'mid', priority: 2 },
   });
   const [claimed] = await store.claimBatch(1);
   const routed = await store.route(requirement.id, claimed.claimId);
@@ -94,6 +94,19 @@ async function issueComment(statePath, number, body, association = 'OWNER') {
   await writeFile(statePath, JSON.stringify(state));
 }
 
+async function mutatePrState(statePath, mutate) {
+  const state = JSON.parse(await readFile(statePath, 'utf8'));
+  mutate(state.prs[0], state);
+  await writeFile(statePath, JSON.stringify(state));
+  return state.prs[0];
+}
+async function addPrComment(statePath, { body, login = 'maintainer', association = 'OWNER', created = new Date().toISOString() }) {
+  return mutatePrState(statePath, (pr, state) => {
+    pr.comments = pr.comments ?? [];
+    pr.comments.push({ id: state.nextComment++, body, user: { login }, author_association: association, created_at: created });
+  });
+}
+
 test('development graph is generic: continuous detached producer, root 6, one three-slot engineering/review pool', async () => {
   const graph = normalizeDefinition(JSON.parse(await readFile(graphFile, 'utf8')));
   assert.equal(graph.apiVersion, 2); assert.equal(graph.concurrency, 6);
@@ -102,7 +115,8 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.equal(engineer.concurrency, 3); assert.equal(reviewer.concurrency, 3);
   assert.equal(engineer.config.cwd, '$input.cwd'); assert.equal(reviewer.config.cwd, '$input.cwd');
   assert.equal(graph.nodes.filter(node => node.role === 'reviewer').length, 1, 'a pool, not three reviews per item');
-  assert.equal(graph.nodes.find(node => node.id === 'check-pr').concurrency, 1);
+  assert.equal(graph.nodes.find(node => node.id === 'pr-watch').concurrency, 1);
+  assert.equal(graph.nodes.find(node => node.id === 'pr-merge').concurrency, 1);
   assert.equal(graph.nodes.find(node => node.id === 'publish-pr').concurrency, 1);
   assert.ok(graph.nodes.find(node => node.id === 'brief'));
   assert.ok(!('timeoutMs' in engineer.config)); assert.ok(!('timeoutMs' in reviewer.config));
@@ -115,7 +129,7 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.ok(graph.edges.some(edge => edge.from === 'brief' && edge.to === 'integration-route' && edge.on === 'complete'));
   assert.ok(graph.edges.some(edge => edge.from === 'integration-route' && edge.to === 'merge-human' && edge.on === 'local'));
   assert.ok(graph.edges.some(edge => edge.from === 'integration-route' && edge.to === 'ready-pr' && edge.on === 'pr'));
-  assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'begin-engineering' && edge.on === 'closed'));
+  assert.ok(graph.edges.some(edge => edge.from === 'pr-watch' && edge.to === 'pr-request-changes' && edge.on === 'closed'));
   assert.ok(graph.nodes.find(node => node.id === 'pr-gate').type === 'gate');
   assert.equal(graph.nodes.find(node => node.id === 'publish-requirement-issue').concurrency, 1);
   assert.equal(graph.nodes.find(node => node.id === 'check-requirement-issue').concurrency, 1);
@@ -132,9 +146,9 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.ok(graph.edges.some(edge => edge.from === 'intake-plan' && edge.to === 'intake-apply' && edge.on === 'planned'));
   assert.ok(graph.edges.some(edge => edge.from === 'intake-plan' && edge.to === 'intake-apply' && edge.on === 'unclear'));
   assert.ok(graph.edges.some(edge => edge.from === 'intake-apply' && edge.to === 'dispatch' && edge.on === 'complete'));
-  assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'pr-gate' && edge.on === 'waiting'));
-  assert.ok(graph.edges.some(edge => edge.from === 'check-pr' && edge.to === 'self-merge-human' && edge.on === 'approval-needed'));
-  assert.ok(graph.edges.some(edge => edge.from === 'self-merge-human' && edge.to === 'approve-self' && edge.on === 'approve'));
+  assert.ok(graph.edges.some(edge => edge.from === 'pr-watch' && edge.to === 'pr-gate' && edge.on === 'waiting'));
+  assert.ok(graph.edges.some(edge => edge.from === 'pr-watch' && edge.to === 'pr-merge' && edge.on === 'pass'));
+  assert.ok(graph.edges.some(edge => edge.from === 'pr-merge' && edge.to === 'cleanup' && edge.on === 'merged'));
   assert.ok(graph.nodes.find(node => node.id === 'seed-fanout').config.detached);
   assert.ok(graph.nodes.find(node => node.id === 'producer-work').config.detached);
   assert.ok(graph.edges.some(edge => edge.from === 'producer-work' && edge.to === 'mine-gate'));
@@ -180,7 +194,7 @@ test('user priority0 and low-risk mined bypass; mid/high human feedback revises 
     assert.equal(routed.outcome, 'needs_approval');
     await assert.rejects(decideRequirement(store, id, envelope.claimId, 'reject'), /feedback/);
     await decideRequirement(store, id, envelope.claimId, 'reject', 'Bound the scope; preserve identity');
-    await store.reviseRequirement(id, envelope.claimId, { expectedRevision: 1, title: 'Bounded scope', description: 'Narrow and testable', risk: 'mid' });
+    await store.reviseRequirement(id, envelope.claimId, { expectedRevision: 1, title: 'Bounded scope', summary: 'Narrow and testable', evidence: 'Narrow and testable', risk: 'mid' });
     const item = await store.get(id);
     assert.equal(item.id, id); assert.equal(item.revision, 2); assert.equal(item.claimId, envelope.claimId);
     assert.equal(item.feedback[0].note, 'Bound the scope; preserve identity');
@@ -196,7 +210,7 @@ test('driver init seeds the baseline discovery directions exactly once', async t
   const result = await cli('init', { dataRoot, repoRoot: repo });
   assert.equal(result.outcome, 'complete');
   assert.equal(result.output.baselineSeeds, 14);
-  assert.equal(result.output.version, 3);
+  assert.equal(result.output.version, 4);
   assert.equal(result.output.maxMiningSeeds, 3);
   const store = await DevelopmentStore.open(dataRoot);
   const seeds = await store.claimSeeds(100, { maxMining: 100 });
@@ -212,7 +226,7 @@ test('seed ids differ from requirement ids; no-proposal returns the seed to the 
   await store.upsertSeed({ id: 'seed-one', title: 'Useful evidence', evidence: 'Local source evidence' });
   await store.upsertSeed({ id: 'seed-empty', title: 'Not actionable', evidence: 'Needs more evidence' });
   const seeds = await store.claimSeeds(3);
-  const proposed = await store.proposeSeed({ seedId: seeds[0].seedId, claimId: seeds[0].claimId, proposal: { title: 'Concrete fix', description: 'Concrete expected behavior', risk: 'low', priority: 2 } });
+  const proposed = await store.proposeSeed({ seedId: seeds[0].seedId, claimId: seeds[0].claimId, proposal: { title: 'Concrete fix', summary: 'Concrete expected behavior', evidence: 'Concrete expected behavior', risk: 'low', priority: 2 } });
   assert.equal(proposed.id, 'req-one'); assert.equal(proposed.seedId, 'seed-one'); assert.notEqual(proposed.id, proposed.seedId);
   assert.equal(await store.proposeSeed({ seedId: seeds[1].seedId, claimId: seeds[1].claimId, proposal: null, reason: 'already covered by req-one' }), null);
   assert.equal((await store.list()).length, 1);
@@ -338,7 +352,7 @@ test('a settled mined requirement returns its seed to the back of the rotation',
   const proposed = await store.proposeSeed({
     seedId: first.seedId,
     claimId: first.claimId,
-    proposal: { title: 'Mined settle', description: 'Concrete change', risk: 'low', priority: 2 },
+    proposal: { title: 'Mined settle', summary: 'Concrete change', evidence: 'Concrete change', risk: 'low', priority: 2 },
   });
   assert.equal(proposed.id, 'req-settle');
   assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-settle').status, 'proposed');
@@ -382,7 +396,7 @@ test('a merged mined requirement re-arms its seed, and re-mining creates a suffi
   const proposed = await store.proposeSeed({
     seedId: 'seed-mine',
     claimId: first.claimId,
-    proposal: { title: 'First mined change', description: 'Concrete change', risk: 'low', priority: 2 },
+    proposal: { title: 'First mined change', summary: 'Concrete change', evidence: 'Concrete change', risk: 'low', priority: 2 },
   });
   assert.equal(proposed.id, 'req-mine');
   const item = await prepared(store, 'req-mine', mined('req-mine', 'low', { expectedRevision: proposed.revision }));
@@ -399,7 +413,7 @@ test('a merged mined requirement re-arms its seed, and re-mining creates a suffi
   const next = await store.proposeSeed({
     seedId: 'seed-mine',
     claimId: second.claimId,
-    proposal: { title: 'Second mined change', description: 'Another concrete change', risk: 'low', priority: 2 },
+    proposal: { title: 'Second mined change', summary: 'Another concrete change', evidence: 'Another concrete change', risk: 'low', priority: 2 },
   });
   assert.equal(next.id, 'req-mine-r2');
   assert.equal(next.seedId, 'seed-mine');
@@ -428,7 +442,7 @@ test('retiring a direction whose requirement is still active keeps it retired', 
   const requirement = await store.proposeSeed({
     seedId: 'seed-busy',
     claimId: claimed.claimId,
-    proposal: { title: 'Busy change', description: 'Concrete change', risk: 'low', priority: 2 },
+    proposal: { title: 'Busy change', summary: 'Concrete change', evidence: 'Concrete change', risk: 'low', priority: 2 },
   });
   await store.retireSeed('seed-busy', 'direction no longer wanted');
   assert.equal((await store.readSeeds()).find(seed => seed.id === 'seed-busy').status, 'retired');
@@ -480,7 +494,7 @@ test('intake records raw text, applies one plan, and dedupes derived seeds', asy
   const applied = await cli('intake-apply', {
     dataRef: recorded.output.dataRef,
     claimId: recorded.output.claimId,
-    requirement: { title: 'Dashboard page', description: 'Ship a dashboard page with a loading state', risk: 'mid', tags: ['page'] },
+    requirement: { title: 'Dashboard page', summary: 'Ship a dashboard page with a loading state', evidence: 'Ship a dashboard page with a loading state', risk: 'mid', tags: ['page'] },
     seeds: [
       { title: 'Document the dashboard', evidence: 'README lacks a dashboard section', tags: ['docs'] },
       { title: 'Dashboard empty states', evidence: 'No empty/error states exist', tags: ['ux'] },
@@ -501,7 +515,7 @@ test('intake records raw text, applies one plan, and dedupes derived seeds', asy
   const reused = await cli('intake-apply', {
     dataRef: second.output.dataRef,
     claimId: second.output.claimId,
-    requirement: { title: 'Another request', description: 'Different bounded work', risk: 'low' },
+    requirement: { title: 'Another request', summary: 'Different bounded work', evidence: 'Different bounded work', risk: 'low' },
     seeds: [{ title: 'Document the dashboard', evidence: 'duplicate direction' }],
   });
   assert.equal(reused.output.seeds.length, 0);
@@ -523,7 +537,7 @@ test('an unclear intake keeps and queues the raw request', async t => {
   const item = await store.get(path.basename(recorded.output.dataRef, '.json'));
   assert.equal(item.status, 'queued');
   assert.equal(item.needsPlanning, false);
-  assert.match(item.description, /maybe improve things a bit/);
+  assert.match(item.evidence, /maybe improve things a bit/);
   assert.equal(item.intakeReason, 'too vague to split safely');
   assert.equal((await store.readSeeds()).length, 0);
 });
@@ -545,7 +559,7 @@ test('the intake graph plans a broad request before dispatch claims it', async t
       plannerCalls += 1;
       assert.equal(node.config.reasoningEffort, 'low');
       assert.match(input.text, /dashboard/);
-      return { outcome: 'planned', output: { requirement: { title: 'Dashboard page', description: 'Ship the first dashboard view', risk: 'low' }, seeds: [{ title: 'Docs for the dashboard', evidence: 'README lacks dashboard documentation' }] } };
+      return { outcome: 'planned', output: { requirement: { title: 'Dashboard page', summary: 'Ship the first dashboard view', evidence: 'Ship the first dashboard view', risk: 'low' }, seeds: [{ title: 'Docs for the dashboard', evidence: 'README lacks dashboard documentation' }] } };
     },
   };
   // Keep the newly queued requirement at the claim boundary so the test does not
@@ -560,14 +574,40 @@ test('the intake graph plans a broad request before dispatch claims it', async t
   assert.ok((await store.readSeeds()).some(seed => seed.title === 'Docs for the dashboard' && seed.origin === 'user'));
 });
 
-test('a version 2 business store is rejected instead of reinterpreted in place', async t => {
+test('a v3 business store is rejected until the explicit migrate stage upgrades it', async t => {
   const { store } = await fixture(t);
   const legacy = path.join(store.root, '..', 'legacy-store');
   await mkdir(legacy);
   for (const name of ['requirements', 'seeds', 'artifacts', 'reviews', 'worktrees', 'locks']) await mkdir(path.join(legacy, name));
-  await writeFile(path.join(legacy, 'config.json'), JSON.stringify({ version: 2, dataRoot: legacy, repoRoot: store.config.repoRoot }));
-  await assert.rejects(DevelopmentStore.open(legacy), /Unsupported business store version 2/);
-  await assert.rejects(DevelopmentStore.create({ dataRoot: legacy, repoRoot: store.config.repoRoot, integrationMode: 'local' }), /Unsupported business store version 2/);
+  const config = { version: 3, dataRoot: legacy, repoRoot: store.config.repoRoot, baseBranch: 'main', cleanupPolicy: 'after-verified-merge', integrationMode: 'local', prRemote: 'origin', maxMiningSeeds: 3, staleClaimMs: 1_800_000 };
+  await writeFile(path.join(legacy, 'config.json'), JSON.stringify(config));
+  await writeFile(path.join(legacy, 'requirements', 'req-legacy.json'), JSON.stringify({
+    id: 'req-legacy', source: 'user', seedId: null, title: 'Legacy change', description: 'Old full description', tags: [],
+    priority: 0, risk: 'mid', revision: 1, order: 1, createdAt: '2026-01-01T00:00:00.000Z', status: 'merged', worktreePath: null,
+    baseRevision: null, implementation: null, reviews: [], feedback: [], github: null, requirementApproval: null, approval: null,
+    claimId: null, engineeringEpoch: 0, pendingSnapshot: null,
+  }));
+  await assert.rejects(DevelopmentStore.open(legacy), /Unsupported business store version 3/);
+  const dry = await cli('migrate', { dataRoot: legacy });
+  assert.equal(dry.outcome, 'complete'); assert.equal(dry.output.applied, false); assert.equal(dry.output.migrated, 1);
+  assert.equal(JSON.parse(await readFile(path.join(legacy, 'config.json'), 'utf8')).version, 3, 'dry-run never writes');
+  const applied = await cli('migrate', { dataRoot: legacy, apply: true });
+  assert.equal(applied.output.applied, true);
+  const migrated = JSON.parse(await readFile(path.join(legacy, 'requirements', 'req-legacy.json'), 'utf8'));
+  assert.equal(migrated.description, undefined); assert.equal(migrated.evidence, 'Old full description');
+  assert.equal(migrated.summary, 'Old full description'); assert.deepEqual(migrated.why, []); assert.deepEqual(migrated.acceptance, []);
+  assert.equal(migrated.status, 'merged', 'terminal audit state is preserved');
+  const opened = await DevelopmentStore.open(legacy);
+  assert.equal(opened.config.mergePolicy, 'comment');
+  const again = await cli('migrate', { dataRoot: legacy });
+  assert.equal(again.output.migrated, 0);
+  assert.equal(again.output.applied, false);
+});
+test('decision-first requirement fields are bounded', async t => {
+  const { store } = await fixture(t);
+  await assert.rejects(store.upsertRequirement({ ...user('req-long'), summary: 'x'.repeat(1001) }), /Invalid summary/);
+  await assert.rejects(store.upsertRequirement({ ...user('req-many'), acceptance: Array.from({ length: 9 }, () => 'testable') }), /Invalid acceptance/);
+  await assert.rejects(store.upsertRequirement({ ...user('req-long-evidence'), evidence: 'x'.repeat(12_001) }), /Invalid evidence/);
 });
 
 test('CLI protocol is JSON-only and filesystem claim lock works across processes', async t => {
@@ -590,7 +630,7 @@ test('CLI protocol is JSON-only and filesystem claim lock works across processes
   assert.equal(JSON.parse(stdout).outcome, 'fail');
 });
 
-test('one requirement branch + one worktree + one PR survives review, external merge and cleanup', async t => {
+test('one requirement branch + one worktree + one PR survives review, GitHub feedback and external merge', async t => {
   const base = await fixture(t, { integrationMode: 'pull-request' });
   const { state: prState, fakeGh } = await withPullRequestFixture(t, base, { readyMerges: false });
   const { store, repo } = base;
@@ -604,10 +644,16 @@ test('one requirement branch + one worktree + one PR survives review, external m
   assert.equal(published.outcome, 'complete');
   assert.equal((await store.get(item.id)).pr.number, 1);
   await pass(store, item, artifact);
-  const brief = await mergeBrief(store, item.id, item.claimId);
-  assert.match(brief.brief.markdown, /## Requirement/);
-  assert.match(brief.brief.markdown, /req-branch/);
-  await updateBody(store, brief);
+  const briefed = await mergeBrief(store, item.id, item.claimId);
+  const markdown = briefed.brief.markdown;
+  assert.match(markdown, /## Change/);
+  assert.match(markdown, /## Verification/);
+  assert.match(markdown, /## Review verdict/);
+  assert.match(markdown, /## Merge decision/);
+  assert.match(markdown, /@workflow merge/);
+  assert.match(markdown, /<details>/);
+  assert.doesNotMatch(markdown, /## Requirement/);
+  await updateBody(store, briefed);
   let prFile = JSON.parse(await readFile(prState, 'utf8'));
   assert.match(prFile.prs[0].body, /Pinned commit reviewed/);
   assert.match(prFile.prs[0].body, /^<!-- workflow/);
@@ -616,8 +662,9 @@ test('one requirement branch + one worktree + one PR survives review, external m
   prFile = JSON.parse(await readFile(prState, 'utf8'));
   assert.match(prFile.prs[0].body, /stage=verifying/);
   assert.equal((prFile.prs[0].labels ?? []).includes('workflow:merge-ready'), false);
+  assert.equal((await watch(store, item.id, item.claimId)).outcome, 'waiting');
   await execute(process.execPath, [fakeGh, 'pr', 'merge', '1'], { cwd: base.repo, env: { ...process.env } });
-  const merged = await check(store, item.id, item.claimId);
+  const merged = await watch(store, item.id, item.claimId);
   assert.equal(merged.outcome, 'merged');
   assert.equal((await store.get(item.id)).integration.mechanism, 'external-pr');
   assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
@@ -625,37 +672,137 @@ test('one requirement branch + one worktree + one PR survives review, external m
   await assert.rejects(lstat(item.cwd), { code: 'ENOENT' });
 });
 
-test('after Human approval the workflow self-merges its PR when external merge does not happen', async t => {
-  const base = await fixture(t, { integrationMode: 'pull-request', selfMergeAfterMs: 0 });
-  await withPullRequestFixture(t, base, { readyMerges: false });
-  const { store, repo } = base;
-  // A mined requirement exercises the PR-path seed re-arm; the other PR test
-  // covers a user requirement.
-  await store.upsertSeed({ id: 'seed-self', title: 'Self merge direction', evidence: 'Evidence' });
-  const [claimed] = await store.claimSeeds(1);
-  const proposed = await store.proposeSeed({ seedId: 'seed-self', claimId: claimed.claimId, proposal: { title: 'Self merge change', description: 'Concrete change', risk: 'low', priority: 2 } });
-  const item = await prepared(store, 'req-self', mined('req-self', 'low', { expectedRevision: proposed.revision }));
+test('an authorized verdict plus @workflow merge merges with a merge commit and settles the seed', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request' });
+  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store } = base;
+  await store.upsertSeed({ id: 'seed-merge', title: 'Merge direction', evidence: 'Evidence' });
+  const [seed] = await store.claimSeeds(1);
+  const proposed = await store.proposeSeed({ seedId: 'seed-merge', claimId: seed.claimId, proposal: { title: 'Merge change', summary: 'Concrete change', evidence: 'Concrete change', risk: 'low', priority: 2 } });
+  const item = await prepared(store, 'req-merge', mined('req-merge', 'low', { expectedRevision: proposed.revision }));
   const artifact = await implement(store, item);
   await publish(store, item.id, item.claimId);
   await pass(store, item, artifact);
   await mergeBrief(store, item.id, item.claimId);
-  assert.equal((await ready(store, item.id, item.claimId)).outcome, 'complete');
-  const waiting = await check(store, item.id, item.claimId);
-  assert.equal(waiting.outcome, 'approval-needed');
-  const gated = JSON.parse(await readFile(path.join(base.root, 'fake-pr-state.json'), 'utf8'));
+  await ready(store, item.id, item.claimId);
+  // Unauthorized and workflow-authored comments never decide.
+  await addPrComment(prState, { body: '[verdict=revise]', login: 'outsider', association: 'NONE' });
+  await addPrComment(prState, { body: '[role=workflow] [verdict=revise]', login: 'maintainer', association: 'OWNER' });
+  assert.equal((await watch(store, item.id, item.claimId)).outcome, 'waiting');
+  await addPrComment(prState, { body: '@workflow merge', login: 'maintainer', association: 'OWNER' });
+  await addPrComment(prState, { body: '[verdict=pass]', login: 'maintainer', association: 'OWNER' });
+  const passed = await watch(store, item.id, item.claimId);
+  assert.equal(passed.outcome, 'pass');
+  const gated = JSON.parse(await readFile(prState, 'utf8'));
   assert.match(gated.prs[0].body, /stage=merge-ready/);
   assert.ok(gated.prs[0].labels.includes('workflow:merge-ready'));
-  await store.mergeDecision(item.id, item.claimId, { artifactRef: artifact.artifactRef, decision: 'approve', actor: 'test-human' });
-  const merged = await selfMerge(store, item.id, item.claimId);
+  const merged = await merge(store, item.id, item.claimId);
   assert.equal(merged.outcome, 'merged');
-  assert.equal((await store.get(item.id)).integration.mechanism, 'self-merge');
-  assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
-  assert.equal(await git(repo, 'branch', '--list', 'auto/req-self'), '');
-  const settled = (await store.readSeeds()).find(seed => seed.id === 'seed-self');
+  const after = await store.get(item.id);
+  assert.equal(after.status, 'merged');
+  assert.equal(after.integration.mechanism, 'workflow-merge');
+  assert.ok(after.pr.mergeDecision.mergeCommit);
+  assert.equal(after.pr.mergeDecision.decision.kind, 'comment');
+  const settled = (await store.readSeeds()).find(entry => entry.id === 'seed-merge');
   assert.equal(settled.status, 'queued');
   assert.equal(settled.lastOutcome, 'requirement-merged');
 });
 
+test('blocking GitHub feedback reworks the same branch and a stale verdict cannot block the new head', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request' });
+  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store } = base;
+  const item = await prepared(store, 'req-revise');
+  const artifact = await implement(store, item);
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  await addPrComment(prState, { body: '[verdict=revise]', login: 'maintainer', association: 'OWNER' });
+  const revised = await watch(store, item.id, item.claimId);
+  assert.equal(revised.outcome, 'revise');
+  const blocked = JSON.parse(await readFile(prState, 'utf8'));
+  assert.match(blocked.prs[0].body, /stage=blocked/);
+  assert.equal((blocked.prs[0].labels ?? []).includes('workflow:merge-ready'), false);
+  const applied = await requestChanges(store, item.id, item.claimId, { feedback: revised.feedback });
+  assert.equal(applied.outcome, 'complete');
+  const reworked = await store.get(item.id);
+  assert.equal(reworked.status, 'engineering-ready');
+  assert.equal(reworked.approval, null);
+  assert.equal(reworked.branch, 'auto/req-revise');
+  assert.equal(reworked.feedback.at(-1).key, `comment:${revised.feedback.decision.id}`);
+  const before = reworked.feedback.length;
+  await requestChanges(store, item.id, item.claimId, { feedback: revised.feedback });
+  assert.equal((await store.get(item.id)).feedback.length, before, 'the same GitHub decision is applied once');
+  // Rework on the same branch/worktree, publish the new head, and require a
+  // fresh verdict: the old markerless revise comment predates the new window.
+  const next = await implement(store, { ...reworked, cwd: reworked.worktreePath }, { contents: 'reworked after feedback\n' });
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, next);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  await addPrComment(prState, { body: '@workflow merge', login: 'maintainer', association: 'OWNER' });
+  await addPrComment(prState, { body: '[verdict=pass]', login: 'maintainer', association: 'OWNER' });
+  assert.equal((await watch(store, item.id, item.claimId)).outcome, 'pass');
+  assert.equal((await merge(store, item.id, item.claimId)).outcome, 'merged');
+});
+
+test('PR merge gate waits for green CI and resolved threads, then honours the label policy', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request', mergePolicy: 'label' });
+  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store } = base;
+  const item = await prepared(store, 'req-gate');
+  const artifact = await implement(store, item);
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  await mutatePrState(prState, pr => { pr.checks = [{ conclusion: 'FAILURE' }]; pr.threads = [{ isResolved: false }]; });
+  await addPrComment(prState, { body: '[verdict=pass]', login: 'maintainer', association: 'OWNER' });
+  assert.equal((await watch(store, item.id, item.claimId)).outcome, 'revise', 'an unresolved thread is blocking feedback');
+  let gated = JSON.parse(await readFile(prState, 'utf8'));
+  assert.match(gated.prs[0].body, /stage=blocked/);
+  assert.equal((gated.prs[0].labels ?? []).includes('workflow:merge-ready'), false);
+  await mutatePrState(prState, pr => { pr.checks = [{ conclusion: 'SUCCESS' }]; pr.threads = [{ isResolved: true }]; });
+  assert.equal((await watch(store, item.id, item.claimId)).outcome, 'waiting', 'the label policy still needs workflow:merge');
+  await mutatePrState(prState, pr => { pr.labels = [...(pr.labels ?? []), 'workflow:merge']; });
+  assert.equal((await watch(store, item.id, item.claimId)).outcome, 'pass');
+  assert.equal((await merge(store, item.id, item.claimId)).outcome, 'merged');
+});
+
+test('merge policy auto merges a fresh pass without a comment', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request', mergePolicy: 'auto' });
+  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store } = base;
+  const item = await prepared(store, 'req-auto');
+  const artifact = await implement(store, item);
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  await addPrComment(prState, { body: '[verdict=pass]', login: 'maintainer', association: 'OWNER' });
+  assert.equal((await watch(store, item.id, item.claimId)).outcome, 'pass');
+  assert.equal((await merge(store, item.id, item.claimId)).outcome, 'merged');
+});
+
+test('a closed PR returns to engineering on the same requirement', async t => {
+  const base = await fixture(t, { integrationMode: 'pull-request' });
+  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store } = base;
+  const item = await prepared(store, 'req-closed');
+  const artifact = await implement(store, item);
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  await mutatePrState(prState, pr => { pr.state = 'CLOSED'; });
+  const closed = await watch(store, item.id, item.claimId);
+  assert.equal(closed.outcome, 'closed');
+  assert.equal((await requestChanges(store, item.id, item.claimId, { reason: closed.reason })).outcome, 'complete');
+  const reworked = await store.get(item.id);
+  assert.equal(reworked.status, 'engineering-ready');
+  assert.equal(reworked.feedback.at(-1).scope, 'pr');
+});
 test('pr-init checks and safely creates the labels and PR template', async t => {
   const base = await fixture(t);
   const { state } = await withPullRequestFixture(t, base);
@@ -685,6 +832,11 @@ test('requirement review publishes one redacted issue and applies an authorized 
   const issue = fake.issues[0];
   assert.match(issue.title, /Review me/);
   assert.match(issue.body, /workflow-requirement/);
+  assert.match(issue.body, /## What/);
+  assert.match(issue.body, /## Acceptance/);
+  assert.match(issue.body, /## Decision/);
+  assert.match(issue.body, /<details>/);
+  assert.ok(issue.body.indexOf('## What') < issue.body.indexOf('<details>'), 'the decision view comes before full evidence');
   assert.doesNotMatch(issue.body, /C:\\Users/);
   assert.doesNotMatch(issue.body, /owner@example\.com/);
   assert.doesNotMatch(issue.body, /ghp_/);
@@ -731,7 +883,7 @@ test('requirement review rejects with a reason and reopens the same issue for a 
   assert.equal(current.requirementApproval.decision, 'reject');
   assert.equal(current.requirementApproval.actor, 'github:maintainer');
   // The analyst revises the same id; its route republishes revision 2 on the same issue.
-  await base.store.reviseRequirement(item.id, item.claimId, { expectedRevision: current.revision, title: 'Review me v2', description: 'Narrowed change', risk: 'mid', tags: ['user'] });
+  await base.store.reviseRequirement(item.id, item.claimId, { expectedRevision: current.revision, title: 'Review me v2', summary: 'Narrowed change', evidence: 'Narrowed change', risk: 'mid', tags: ['user'] });
   const rerouted = await base.store.route(item.id, item.claimId);
   assert.equal(rerouted.outcome, 'needs_approval');
   const republished = await cli('publish-requirement-issue', base.store.envelope(rerouted.item));
@@ -749,39 +901,6 @@ test('requirement review rejects with a reason and reopens the same issue for a 
   const merged = await base.store.get(item.id);
   assert.equal(merged.revision, 2);
   assert.equal(merged.status, 'ready');
-});
-
-test('PR protocol blocks merge-ready on failing CI or unresolved review threads', async t => {
-  const base = await fixture(t, { integrationMode: 'pull-request', selfMergeAfterMs: 0 });
-  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
-  const { store } = base;
-  const item = await prepared(store, 'req-gate');
-  const artifact = await implement(store, item);
-  await publish(store, item.id, item.claimId);
-  await pass(store, item, artifact);
-  await mergeBrief(store, item.id, item.claimId);
-  await ready(store, item.id, item.claimId);
-  const fake = JSON.parse(await readFile(prState, 'utf8'));
-  fake.prs[0].checks = [{ conclusion: 'FAILURE' }];
-  fake.prs[0].threads = [{ isResolved: false }];
-  await writeFile(prState, JSON.stringify(fake));
-  assert.equal((await check(store, item.id, item.claimId)).outcome, 'waiting');
-  let gated = JSON.parse(await readFile(prState, 'utf8'));
-  assert.match(gated.prs[0].body, /stage=blocked/);
-  assert.equal((gated.prs[0].labels ?? []).includes('workflow:merge-ready'), false);
-  gated.prs[0].checks = [{ conclusion: 'SUCCESS' }];
-  gated.prs[0].threads = [{ isResolved: true }];
-  gated.prs[0].comments = [{ body: '[review]\nmissing role header' }];
-  await writeFile(prState, JSON.stringify(gated));
-  assert.equal((await check(store, item.id, item.claimId)).outcome, 'waiting');
-  assert.match(JSON.parse(await readFile(prState, 'utf8')).prs[0].body, /stage=blocked/);
-  gated = JSON.parse(await readFile(prState, 'utf8'));
-  gated.prs[0].comments = [{ body: `[role=reviewer] [task=req-gate] [head=${gated.prs[0].headRefOid}]\n[review]\npass` }];
-  await writeFile(prState, JSON.stringify(gated));
-  assert.equal((await check(store, item.id, item.claimId)).outcome, 'approval-needed');
-  gated = JSON.parse(await readFile(prState, 'utf8'));
-  assert.match(gated.prs[0].body, /stage=merge-ready/);
-  assert.ok(gated.prs[0].labels.includes('workflow:merge-ready'));
 });
 
 test('real worktree survives review feedback/rejection; implementation and reviews pin immutable revisions', async t => {
@@ -898,7 +1017,7 @@ test('producer cycles independently of disabled workers, claims each seed once a
     command: async ({ node, input }) => stage(node.config.command.split(' ').at(-1), input),
     agent: async ({ node, input }) => {
       assert.equal(node.id, 'miner'); minerCalls++; assert.equal(input.seedId, 'seed-live');
-      return { outcome: 'proposal', output: { proposal: { title: 'Live proposal', description: 'Narrow local change', risk: 'low', priority: 2 } } };
+      return { outcome: 'proposal', output: { proposal: { title: 'Live proposal', summary: 'Narrow local change', evidence: 'Narrow local change', risk: 'low', priority: 2 } } };
     },
   };
   for (let slice = 0; slice < 3; slice++) await run(state, executors, { io, control: { continuous: true, nodes: { route: false } }, maxSteps: 20 });

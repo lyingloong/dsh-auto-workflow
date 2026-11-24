@@ -66,7 +66,7 @@
           "planned",
           "unclear"
         ],
-        "prompt": "Plan a broad user request into one concrete requirement and optional discovery directions. Read the raw request at input.text, the requirement queue under input.dataRoot/requirements, existing seeds, recent commits, tests, docs and relevant source in cwd. Decide whether the request is already concrete: if so, produce only the single requirement that should be implemented first. If it is broad, produce that same first concrete requirement plus 0-3 follow-up seeds that name genuinely separate work visible after the first delivery; each seed needs a title, concrete evidence locations and an acceptance direction. Deduplicate against existing requirements, seeds, branches and pull requests (when gh is available); skip anything already covered. Never start, claim or mint requirements from these seeds; they enter the normal rotation. Do not edit the repository or business store and do not invoke approval services. Return outcome planned with output {requirement:{title,description,risk:low|mid|high,tags:[]},seeds:[{title,evidence,tags:[],category}],reason}, or outcome unclear with output {reason}. Keep the requirement description factual and testable."
+        "prompt": "Plan a broad user request into one concrete requirement and optional discovery directions. Read the raw request at input.text, the requirement queue under input.dataRoot/requirements, existing seeds, recent commits, tests, docs and relevant source in cwd. Decide whether the request is already concrete: if so, produce only the single requirement that should be implemented first. If it is broad, produce that same first concrete requirement plus 0-3 follow-up seeds that name genuinely separate work visible after the first delivery; each seed needs a title, concrete evidence locations and an acceptance direction. Deduplicate against existing requirements, seeds, branches and pull requests (when gh is available); skip anything already covered. Never start, claim or mint requirements from these seeds; they enter the normal rotation. Do not edit the repository or business store and do not invoke approval services. Return outcome planned with output {requirement:{title,summary,why:[],acceptance:[],evidence,risk:low|mid|high,tags:[]},seeds:[{title,evidence,tags:[],category}],reason}, or outcome unclear with output {reason}. Keep summary to 1-2 sentences, why to at most 3 impact bullets, acceptance to 3-5 testable bullets, and put the detailed analysis in evidence."
       }
     },
     {
@@ -180,7 +180,7 @@
           "proposal",
           "idle"
         ],
-        "prompt": "Mine one seed for genuinely useful, varied work. Read the seed JSON at input.dataRef, the requirement queue under input.dataRoot/requirements, existing branches and pull requests (when gh is available), recent commits, tests, docs and relevant source in cwd. First generate 3-5 candidate directions, covering correctness/regression, reliability/error handling, performance, UX/accessibility, test gaps/observability, security/data safety and maintainability/tooling. For each candidate state evidence, impact, risk and the smallest verifiable acceptance. Discard duplicates of existing requirements, work already proposed or merged in a branch or PR, weak or evidence-free ideas, pure style preferences and anything not independently shippable. Then choose the single highest-value concrete change. Seeds with origin=baseline are discovery directions, not proof: when the direction is already covered or the repository does not support a concrete proposal, return idle with a short reason instead of inventing work. Do not invent another seed or requirement id. Do not edit the repository or business store and do not invoke approval services. Risk is your assessment: low (local reversible), mid (cross-module/uncertain), high (security/destructive/external). Return outcome proposal with output {proposal:{title,description,risk,priority:1..9,tags:[]}}, or outcome idle with output {proposal:null,reason:why this direction has no new work}. The record command derives the stable requirement id from this seed (a repeat after the previous requirement settled gets a suffixed id); an idle seed returns to the seed rotation and is retried after the other directions. No default task deadline is set."
+        "prompt": "Mine one seed for genuinely useful, varied work. Read the seed JSON at input.dataRef, the requirement queue under input.dataRoot/requirements, existing branches and pull requests (when gh is available), recent commits, tests, docs and relevant source in cwd. First generate 3-5 candidate directions, covering correctness/regression, reliability/error handling, performance, UX/accessibility, test gaps/observability, security/data safety and maintainability/tooling. For each candidate state evidence, impact, risk and the smallest verifiable acceptance. Discard duplicates of existing requirements, work already proposed or merged in a branch or PR, weak or evidence-free ideas, pure style preferences and anything not independently shippable. Then choose the single highest-value concrete change. Seeds with origin=baseline are discovery directions, not proof: when the direction is already covered or the repository does not support a concrete proposal, return idle with a short reason instead of inventing work. Keep the decision view short: summary is 1-2 sentences, why has at most 3 impact bullets, acceptance has 3-5 testable bullets; evidence holds the file:line analysis, alternatives and full rationale for the collapsed details section. Do not invent another seed or requirement id. Do not edit the repository or business store and do not invoke approval services. Risk is your assessment: low (local reversible), mid (cross-module/uncertain), high (security/destructive/external). Return outcome proposal with output {proposal:{title,summary,why:[],acceptance:[],evidence,risk,priority:1..9,tags:[]}}, or outcome idle with output {proposal:null,reason:why this direction has no new work}. The record command derives the stable requirement id from this seed (a repeat after the previous requirement settled gets a suffixed id); an idle seed returns to the seed rotation and is retried after the other directions. No default task deadline is set."
       }
     },
     {
@@ -263,7 +263,7 @@
         "outcomes": [
           "complete"
         ],
-        "prompt": "Read input.dataRef, especially current revision and human requirement feedback. Revise this SAME requirement; never create a new id and never edit store files directly. Return output {proposal:{expectedRevision:<current revision>,title,description,risk:low|mid|high,tags:[]}}. Explain intended behavior in description and honor rejection feedback. The command persists revision+1 on the original id and retains its worktree."
+        "prompt": "Read input.dataRef, especially current revision and human requirement feedback. Revise this SAME requirement; never create a new id and never edit store files directly. Return output {proposal:{expectedRevision:<current revision>,title,summary,why:[],acceptance:[],evidence,risk:low|mid|high,tags:[]}}. Keep summary decision-first (1-2 sentences), why at most 3 impact bullets, acceptance 3-5 testable bullets, and put the full analysis in evidence. Honor rejection feedback. The command persists revision+1 on the original id and retains its worktree."
       }
     },
     {
@@ -353,7 +353,7 @@
           "pass",
           "revise"
         ],
-        "prompt": "You are the ONE reviewer assigned this item from a pool of three. Read input.artifactRef, the requirement JSON at input.dataRef, and pinned commit input.commit. Review ONLY that immutable artifact, run appropriate verification, and do not edit/commit the worktree or store. Return outcome pass or revise with output {decision:<same outcome>,summary:<non-empty string of findings or rationale>,verification:<non-empty string containing actual commands and results, NOT an array or object>,reviewer:<non-empty string reviewer label>}. Never approve merge or invoke external approval services. A valid negative review goes to the SAME engineer worktree/id, not model failover."
+        "prompt": "You are the ONE reviewer assigned this item from a pool of three. Read input.artifactRef, the requirement JSON at input.dataRef, and pinned commit input.commit. Review ONLY that immutable artifact, run appropriate verification, and do not edit/commit the worktree or store. Return outcome pass or revise with output {decision:<same outcome>,summary:<short blocking findings or rationale, verdict first>,verification:<non-empty string containing actual commands and results, NOT an array or object>,reviewer:<non-empty string reviewer label>}. Never approve merge or invoke external approval services. A valid negative review goes to the SAME engineer worktree/id, not model failover."
       }
     },
     {
@@ -591,22 +591,69 @@
       }
     },
     {
-      "id": "check-pr",
-      "type": "command",
-      "title": "Check own PR merge state",
-      "concurrency": 1,
-      "config": {
-        "command": "node docs/examples/development/driver.mjs check-pr",
-        "json": true
-      }
-    },
-    {
       "id": "pr-gate",
       "type": "gate",
       "title": "Wait for external PR merge",
       "concurrency": 1,
       "config": {
         "delayMs": 30000
+      }
+    },
+    {
+      "id": "pr-watch",
+      "type": "command",
+      "title": "Watch PR feedback",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs pr-watch",
+        "json": true
+      }
+    },
+    {
+      "id": "busy-pr-watch",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "pr-merge",
+      "type": "command",
+      "title": "Merge PR",
+      "concurrency": 1,
+      "config": {
+        "command": "node docs/examples/development/driver.mjs pr-merge",
+        "json": true
+      }
+    },
+    {
+      "id": "busy-pr-merge",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
+      }
+    },
+    {
+      "id": "pr-request-changes",
+      "type": "command",
+      "title": "Apply GitHub feedback",
+      "concurrency": 1,
+      "inputs": {
+        "dataRef": "$input.dataRef",
+        "claimId": "$input.claimId",
+        "feedback": "$prev.feedback",
+        "reason": "$prev.reason"
+      },
+      "config": {
+        "command": "node docs/examples/development/driver.mjs pr-request-changes",
+        "json": true
+      }
+    },
+    {
+      "id": "busy-pr-request-changes",
+      "type": "gate",
+      "config": {
+        "delayMs": 1000
       }
     },
     {
@@ -618,13 +665,6 @@
     },
     {
       "id": "busy-ready-pr",
-      "type": "gate",
-      "config": {
-        "delayMs": 1000
-      }
-    },
-    {
-      "id": "busy-check-pr",
       "type": "gate",
       "config": {
         "delayMs": 1000
@@ -666,53 +706,6 @@
     },
     {
       "id": "busy-integration-route",
-      "type": "gate",
-      "config": {
-        "delayMs": 1000
-      }
-    },
-    {
-      "id": "self-merge-human",
-      "type": "human",
-      "title": "Approve workflow self-merge",
-      "config": {
-        "title": "External merge did not happen within the grace period. Approve this exact PR for the workflow to self-merge?",
-        "outcomes": [
-          "approve",
-          "revise",
-          "reject"
-        ]
-      }
-    },
-    {
-      "id": "approve-self",
-      "type": "command",
-      "title": "Record self-merge approval",
-      "config": {
-        "command": "node docs/examples/development/driver.mjs merge-decision",
-        "json": true
-      },
-      "inputs": {
-        "dataRef": ".dataRef",
-        "claimId": ".claimId",
-        "artifactRef": ".record-review.output.artifactRef",
-        "decision": "approve",
-        "note": ".note",
-        "actor": ".actor"
-      }
-    },
-    {
-      "id": "self-merge-pr",
-      "type": "command",
-      "title": "Self-merge approved PR",
-      "concurrency": 1,
-      "config": {
-        "command": "node docs/examples/development/driver.mjs self-merge-pr",
-        "json": true
-      }
-    },
-    {
-      "id": "busy-self-merge-pr",
       "type": "gate",
       "config": {
         "delayMs": 1000
@@ -1026,31 +1019,6 @@
       "on": "pass"
     },
     {
-      "from": "ready-pr",
-      "to": "check-pr",
-      "on": "complete"
-    },
-    {
-      "from": "check-pr",
-      "to": "cleanup",
-      "on": "merged"
-    },
-    {
-      "from": "check-pr",
-      "to": "pr-gate",
-      "on": "waiting"
-    },
-    {
-      "from": "check-pr",
-      "to": "begin-engineering",
-      "on": "closed"
-    },
-    {
-      "from": "pr-gate",
-      "to": "check-pr",
-      "on": "complete"
-    },
-    {
       "from": "publish-pr",
       "to": "busy-publish-pr",
       "on": "busy"
@@ -1068,16 +1036,6 @@
     {
       "from": "busy-ready-pr",
       "to": "ready-pr",
-      "on": "complete"
-    },
-    {
-      "from": "check-pr",
-      "to": "busy-check-pr",
-      "on": "busy"
-    },
-    {
-      "from": "busy-check-pr",
-      "to": "check-pr",
       "on": "complete"
     },
     {
@@ -1144,46 +1102,6 @@
       "from": "approve-merge",
       "to": "integrate",
       "on": "approve"
-    },
-    {
-      "from": "check-pr",
-      "to": "self-merge-human",
-      "on": "approval-needed"
-    },
-    {
-      "from": "self-merge-human",
-      "to": "approve-self",
-      "on": "approve"
-    },
-    {
-      "from": "self-merge-human",
-      "to": "request-changes",
-      "on": "revise"
-    },
-    {
-      "from": "self-merge-human",
-      "to": "reject-merge",
-      "on": "reject"
-    },
-    {
-      "from": "approve-self",
-      "to": "self-merge-pr",
-      "on": "approve"
-    },
-    {
-      "from": "self-merge-pr",
-      "to": "cleanup",
-      "on": "merged"
-    },
-    {
-      "from": "self-merge-pr",
-      "to": "busy-self-merge-pr",
-      "on": "busy"
-    },
-    {
-      "from": "busy-self-merge-pr",
-      "to": "self-merge-pr",
-      "on": "complete"
     },
     {
       "from": "integration-route",
@@ -1278,6 +1196,91 @@
     {
       "from": "busy-intake-apply",
       "to": "intake-apply",
+      "on": "complete"
+    },
+    {
+      "from": "ready-pr",
+      "to": "pr-watch",
+      "on": "complete"
+    },
+    {
+      "from": "pr-watch",
+      "to": "pr-merge",
+      "on": "pass"
+    },
+    {
+      "from": "pr-watch",
+      "to": "pr-request-changes",
+      "on": "revise"
+    },
+    {
+      "from": "pr-watch",
+      "to": "pr-request-changes",
+      "on": "closed"
+    },
+    {
+      "from": "pr-watch",
+      "to": "pr-gate",
+      "on": "waiting"
+    },
+    {
+      "from": "pr-watch",
+      "to": "cleanup",
+      "on": "merged"
+    },
+    {
+      "from": "pr-gate",
+      "to": "pr-watch",
+      "on": "complete"
+    },
+    {
+      "from": "pr-merge",
+      "to": "cleanup",
+      "on": "merged"
+    },
+    {
+      "from": "pr-merge",
+      "to": "pr-request-changes",
+      "on": "revise"
+    },
+    {
+      "from": "pr-merge",
+      "to": "pr-gate",
+      "on": "waiting"
+    },
+    {
+      "from": "pr-watch",
+      "to": "busy-pr-watch",
+      "on": "busy"
+    },
+    {
+      "from": "busy-pr-watch",
+      "to": "pr-watch",
+      "on": "complete"
+    },
+    {
+      "from": "pr-merge",
+      "to": "busy-pr-merge",
+      "on": "busy"
+    },
+    {
+      "from": "busy-pr-merge",
+      "to": "pr-merge",
+      "on": "complete"
+    },
+    {
+      "from": "pr-request-changes",
+      "to": "begin-engineering",
+      "on": "complete"
+    },
+    {
+      "from": "pr-request-changes",
+      "to": "busy-pr-request-changes",
+      "on": "busy"
+    },
+    {
+      "from": "busy-pr-request-changes",
+      "to": "pr-request-changes",
       "on": "complete"
     }
   ]

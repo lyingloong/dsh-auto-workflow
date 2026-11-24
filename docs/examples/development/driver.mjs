@@ -23,6 +23,10 @@ async function executeStage(name, input) {
     const created = await store.ensureBaselineSeeds();
     return result('complete', { ...rootEnvelope(store), version: store.config.version, baselineSeeds: created.length, maxMiningSeeds: store.config.maxMiningSeeds, staleClaimMs: store.config.staleClaimMs });
   }
+  if (name === 'migrate') {
+    const migrated = await DevelopmentStore.migrate({ dataRoot: absolute(input.dataRoot, 'dataRoot'), apply: Boolean(input.apply) });
+    return result('complete', migrated);
+  }
   if (['requirement', 'seed', 'claim', 'seed-batch', 'queue-check', 'status', 'recover-seeds', 'retire-seed', 'rearm-seed', 'intake-record'].includes(name)) {
     const store = await DevelopmentStore.open(absolute(input.dataRoot, 'dataRoot'));
     if (name === 'intake-record') {
@@ -131,10 +135,17 @@ async function executeStage(name, input) {
     const item = await store.get(id);
     return result(store.config.integrationMode === 'pull-request' ? 'pr' : 'local', store.envelope(item));
   }
-  if (name === 'publish-pr' || name === 'ready-pr' || name === 'check-pr' || name === 'self-merge-pr') {
-    const action = name === 'publish-pr' ? pullRequests.publish : name === 'ready-pr' ? pullRequests.ready : name === 'self-merge-pr' ? pullRequests.selfMerge : pullRequests.check;
-    const changed = await action(store, id, claimId);
+  if (name === 'publish-pr' || name === 'ready-pr') {
+    const changed = await (name === 'publish-pr' ? pullRequests.publish : pullRequests.ready)(store, id, claimId);
     return result(changed.outcome, store.envelope(changed.item, { ...(changed.item.implementation ?? {}), pr: changed.item.pr ?? null, integration: changed.item.integration ?? null }));
+  }
+  if (name === 'pr-watch' || name === 'pr-merge') {
+    const changed = await (name === 'pr-watch' ? pullRequests.watch : pullRequests.merge)(store, id, claimId);
+    return result(changed.outcome, store.envelope(changed.item, { ...(changed.item.implementation ?? {}), pr: changed.item.pr ?? null, feedback: changed.feedback ?? null, reason: changed.reason ?? null }));
+  }
+  if (name === 'pr-request-changes') {
+    const changed = await pullRequests.requestChanges(store, id, claimId, { feedback: input.feedback ?? null, reason: input.reason ?? null });
+    return result('complete', store.envelope(changed.item, { pr: changed.item.pr ?? null }));
   }
   if (name === 'brief') {
     const item = await worktrees.mergeBrief(store, id, claimId);

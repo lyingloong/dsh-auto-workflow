@@ -2,21 +2,19 @@
 
 这是 `dsh-auto-workflow` **开发示例**的仓库侧 PR 契约，不是插件核心功能。会话在基于本示例创建 workflow 前，应先完成 [PR 初始化](#pr-初始化)。
 
-## 1. 身份
+## 1. 身份与决定权
 
-优先为 Codex、captain、verifier、reviewer 使用独立 GitHub App / bot 账号。做不到时使用方案 C：
-
-- 一个 workflow GitHub 身份；
-- 机器评论必须带角色头：
+- 决定只来自 **OWNER / MEMBER / COLLABORATOR**（评论的 `author_association`，或 review 作者的仓库权限）；外部贡献者、匿名讨论和 workflow 自己的评论不参与决定。
+- 不再要求单独的 Codex / reviewer bot 账号；Codex 可以由协作者账号转述，也可以直接使用正式 GitHub Review。若使用独立 bot，该 bot 必须是协作者。
+- 机器评论可带角色头，便于审计；决定本身由结构化标记承担，不靠角色头猜测：
 
 ```text
 [role=reviewer] [task=dev-0038] [head=ff446ec3]
+[verdict=pass]
 ```
 
-- `role` 只接受 `captain`、`engineer`、`verifier`、`reviewer`、`codex`、`workflow`；
-- `head` 是该评论针对的 commit，至少 12 位；
-- 没有角色头、task 或 head 的机器评论不参与合并判断；
-- 人类普通评论不承担状态，讨论放 inline thread。
+- `head` 是可选的绑定标记；带 `[head=<sha>]` 的评论只对匹配的 head 生效。没有标记的评论只在其提交时间晚于当前反馈窗口（最近一次 ready/rework）时生效。
+- 人类普通讨论不承担状态；讨论放 inline thread。
 
 ## 2. 单一状态源
 
@@ -28,7 +26,7 @@ task=dev-0038
 head=ff446ec3
 base=eea1a85b
 stage=merge-ready
-next=codex-merge
+next=merge
 order=03
 ci=pass
 -->
@@ -44,66 +42,81 @@ ci=pass
 | `order` | workflow 分配的合并顺序 |
 | `ci` | `pass` / `fail` / `pending` / `none` |
 
-评论不是状态。head 变化时，状态立即失效，回到 `reviewing` 并移除 merge-ready 标签。
+评论不是状态。head 变化时，状态立即失效，回到 `reviewing`、清空 `order` 并移除 merge-ready 标签；旧 head 的评论/review 不再计入。
 
-## 3. 顶层评论
+## 3. 决定性输入
 
-顶层评论只允许四类，且必须带角色头：
+workflow 只认这些确定性信号：
 
-- `[verify]`：head、CI run、验证结论和证据；
-- `[review]`：verdict、finding id、残余风险；
-- `[repair]`：修复了哪些 finding、新 head；
-- `[merge-gate]`：Codex / 用户的合并决定。
+| 信号 | 形式 | 绑定 |
+| --- | --- | --- |
+| 评论判决 | `[verdict=pass]` / `[verdict=revise]` | `[head=<sha>]` 或当前反馈窗口 |
+| 正式 review | `APPROVED` / `CHANGES_REQUESTED` | review 的 `commit_id` |
+| 讨论状态 | unresolved review thread | 当前 head |
+| GitHub 汇总 | `reviewDecision` | 仅在无显式判决时兜底 |
+| 合并意图 | `@workflow merge` / `@workflow stop` | 当前反馈窗口（可选 `[head=<sha>]`） |
 
-其他讨论放 inline thread。顶层评论不写过程流水账。
+- 最新一条授权判决获胜；同一时间戳时 `revise` 优先。
+- 有任何未 resolve 的 review thread，一律视为阻塞反馈，永远不能合并。
+- **不从散文猜测 verdict**：没有标记、没有正式 review，就是“尚无判决”。
 
-## 4. Finding 生命周期
+## 4. 合并门与策略
+
+只有同时满足才进入 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签：
+
+- 当前 head 有授权 `pass`；
+- CI 全绿；没有配置检查时记录 `ci=none`（`pr-init` 会把缺少 required checks 作为警告）；
+- 无 unresolved thread；
+- 合并意图已满足（见下）。
+
+存储配置 `mergePolicy` 决定合并意图：
+
+| 策略 | 触发 |
+| --- | --- |
+| `comment`（默认） | 协作者在 PR 评论 `@workflow merge`；`@workflow stop` 取消 |
+| `auto` | 当前 head 通过上述校验即合并 |
+| `label` | PR 带 `workflow:merge` 标签 |
+
+`pr-merge` 在真正合并前会重新读取 PR，并再次校验 head / 判决 / CI / thread / 策略；合并始终使用 **merge commit**。squash/rebase 会改变审查 commit 的 SHA，工作流明确报错而不是放宽绑定。
+
+阻塞反馈（`revise` 或 unresolved thread）会：移除 `workflow:merge-ready`，把同一条返修反馈写回需求（按评论/review id 去重），清除内部批准，回到同 ID/分支/worktree/PR 的 `begin-engineering`，不会合并。
+
+## 5. Finding 生命周期
 
 - finding 使用稳定编号 `F1/F2/...`；
 - inline thread 记录问题和修复；
-- `[repair]` 必须写明“F1 已修，head=xxx”；
+- `[repair]` 评论写明“F1 已修，head=xxx”；
 - 验证/审查复核后 resolve thread；
-- **未 resolve 的 thread 不能合并**；
 - push 新 head 后，旧 head 的 finding 标记 `superseded`，不留在待办。
-
-## 5. 合并门
-
-只有同时满足才算 merge-ready：
-
-- 状态块 `stage=merge-ready`；
-- head 与状态块一致；
-- CI 全绿；没有 CI 时记录 `ci=none`；
-- 无 unresolved thread；
-- `order` 已记录；
-- workflow 已添加 `workflow:merge-ready` 标签。
-
-Codex 只认 `workflow:merge-ready` 标签。head 变化、CI 失败或 thread 未关闭时，workflow 必须移除该标签。
 
 ## 6. 自动化职责
 
 workflow 统一负责：
 
-- 生成/更新状态块；
-- 校验角色头、task、head；
-- head 变化时撤销 merge-ready 和标签；
-- 检测 unresolved review thread；
-- 检查 CI；
-- 分配合并顺序；
-- 合并后清理状态和标签。
-
-仓库侧只读状态和标签，不维护另一套规则。
+- 生成/更新状态块、`order` 和标签；
+- 判断授权决定、head 绑定和反馈窗口；
+- head 变化时撤销 merge-ready/order；
+- 检测 unresolved thread 和 CI；
+- 按 `mergePolicy` 执行 merge 并处理竞争（外部先 merge、PR 被关闭、评论在合并前变化）；
+- 合并后验证 merge commit、清理状态和标签。
 
 ## 7. 一句话原则
 
-**评论负责讨论，状态块负责决策；head 变了结论就失效，未 resolve 的 thread 不算关闭。**
+**决定写在 PR 上的结构化信号里；head 变了结论就失效；未 resolve 的 thread 和 revise 判决永远阻止合并。**
 
 ## 需求审批 issue
 
-mid/high 风险的挖掘需求在**业务仓库的 issue**上审批，每个需求复用一个 issue：
+mid/high 风险的挖掘需求在**业务仓库的 issue**上审批，每个需求复用一个 issue。issue 采用**决策优先**模板：
 
-- issue body 以 `<!-- workflow-requirement` 状态块开头，携带 `requirement`、`revision`、`risk`。
+1. 一行风险/revision/来源；
+2. `## What`：1–2 句要批准的内容；
+3. `## Why / impact`：最多 3 条影响；
+4. `## Acceptance`：3–5 条可测验收；
+5. `## Decision`：`@workflow approve` / `@workflow reject <理由>`；
+6. `<details>`：脱敏后的完整证据、file:line 和备选方案。
+
 - 标签：`workflow:requirement-review`（待审）、`workflow:requirement-approved`、`workflow:requirement-rejected`。
-- 决定写在评论里：`@workflow approve` 或 `@workflow reject <理由>`。只有 OWNER / MEMBER / COLLABORATOR 的评论生效；拒绝必须带理由，否则工作流回评论要求补充。
+- 只有 OWNER / MEMBER / COLLABORATOR 的评论生效；拒绝必须带理由，否则工作流回评论要求补充。
 - 决定按 revision 绑定：发布前已有的评论不计入，返修后工作流更新同一 issue 并重新打开；旧 revision 的评论不能批准新内容。
 - **发布前确定性脱敏**：绝对路径、用户主目录、邮箱、长令牌和私有地址替换为占位符；审批对象是脱敏后的公开版，执行以本地记录为准。
 - 发布后立即首查，之后每 30 分钟复查一次。
@@ -117,7 +130,7 @@ $env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data"}'
 node docs/examples/development/driver.mjs pr-init
 ```
 
-只读检查：GitHub 认证、merge commit、branch protection、`workflow:merge-ready` 标签、PR template、required checks，以及三个需求审批标签。
+只读检查：GitHub 认证、merge commit、branch protection、`workflow:merge-ready` + `workflow:merge` 标签、PR template、required checks，以及三个需求审批标签。
 
 初始化标签和 PR template：
 
@@ -135,4 +148,4 @@ $env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","apply":t
 node docs/examples/development/driver.mjs pr-init
 ```
 
-此时 branch protection、conversation resolution 和 required checks 只是警告，不再阻止启动；`gh` 认证、仓库访问、允许 merge commit、`workflow:merge-ready` 标签和带状态块的 PR template 仍是硬性要求。merge commit 不能降级：工作流靠它把审查过的 commit 绑定进集成分支，squash/rebase-only 仓库无法满足。
+此时 branch protection、conversation resolution 和 required checks 只是警告，不再阻止启动；`gh` 认证、仓库访问、允许 merge commit、`workflow:merge-ready` + `workflow:merge` 标签和带状态块的 PR template 仍是硬性要求。merge commit 不能降级：工作流靠它把审查过的 commit 绑定进集成分支，squash/rebase-only 仓库无法满足。

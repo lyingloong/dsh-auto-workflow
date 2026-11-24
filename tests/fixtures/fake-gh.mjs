@@ -26,7 +26,7 @@ const find = (state, reference) => {
 const publicPr = pr => ({
   number: pr.number, url: pr.url, state: pr.state, isDraft: pr.isDraft,
   headRefOid: pr.headRefOid, mergeCommit: pr.mergeCommit ?? null, mergedAt: pr.mergedAt ?? null,
-  closed: pr.state === 'CLOSED', reviewDecision: null,
+  closed: pr.state === 'CLOSED', reviewDecision: pr.reviewDecision ?? null,
   body: pr.body ?? '', statusCheckRollup: pr.checks ?? [], labels: pr.labels ?? [],
   comments: pr.comments ?? [], reviews: pr.reviews ?? [],
 });
@@ -75,9 +75,30 @@ if (args[0] === 'api' && /\/labels\/[^/]+$/.test(args[1] ?? '')) {
 if (args[0] === 'api' && /\/issues\/\d+\/comments(\?.*)?$/.test(args[1] ?? '')) {
   const state = read();
   const number = Number(String(args[1]).match(/\/issues\/(\d+)\/comments/)[1]);
+  // PR conversation comments share the issues endpoint; prefer the managed PR
+  // when it exists, otherwise the requirement issue.
+  const pr = state.prs.find(entry => entry.number === number);
+  if (pr) {
+    process.stdout.write(JSON.stringify(pr.comments ?? []));
+    process.exit(0);
+  }
   const issue = issueByNumber(state, number);
   if (!issue) fail('no fake issue');
   process.stdout.write(JSON.stringify(issue.comments ?? []));
+  process.exit(0);
+}
+if (args[0] === 'api' && /\/pulls\/\d+\/reviews(\?.*)?$/.test(args[1] ?? '')) {
+  const state = read();
+  const number = Number(String(args[1]).match(/\/pulls\/(\d+)\/reviews/)[1]);
+  const pr = state.prs.find(entry => entry.number === number);
+  if (!pr) fail('no fake PR');
+  process.stdout.write(JSON.stringify(pr.reviews ?? []));
+  process.exit(0);
+}
+if (args[0] === 'api' && /\/collaborators\/[^/]+\/permission(\?.*)?$/.test(args[1] ?? '')) {
+  const state = read();
+  const login = decodeURIComponent(String(args[1]).match(/\/collaborators\/([^/]+)\/permission/)[1]);
+  process.stdout.write(JSON.stringify({ permission: state.permissions?.[login] ?? 'write' }));
   process.exit(0);
 }
 if (args[0] === 'api' && /\/protection$/.test(args[1] ?? '')) {

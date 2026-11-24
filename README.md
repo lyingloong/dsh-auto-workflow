@@ -1,102 +1,151 @@
 # dsh-auto-workflow
 
-**dsh-auto-workflow**是 DeepSeek Harness 的持久化、并发节点图工作流插件。它让模型、命令和人工决策在同一张图中协作：新任务以独立 packet 进入，某项等待 Human 审批时，其他任务仍可继续。
+**Persistent, concurrent node-graph workflows for DeepSeek Harness.**
 
-**“Auto”指已授权流程的持续调度，不是免审批。** Host 常驻期间，空闲或 Human 等待不会结束运行；状态与数据引用会落盘。Host 停止、插件重载或执行中断后，不自动重放不确定的工作，也不承诺跨 Git/HTTP 的掉电事务。
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-当前发布为 **v1.2.0**；首个公开发布为 **v1.0.0**。仓库地址为 [lyingloong/dsh-auto-workflow](https://github.com/lyingloong/dsh-auto-workflow)，项目页为 [lyingloong.github.io/dsh-auto-workflow](https://lyingloong.github.io/dsh-auto-workflow/)。
+[![CI](https://github.com/lyingloong/dsh-auto-workflow/actions/workflows/test.yml/badge.svg)](https://github.com/lyingloong/dsh-auto-workflow/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## 安装
+A workflow is a graph of nodes and edges. One run stays mounted while packets move through it, so model work, shell commands, HTTP calls and human decisions can share a single long-lived pipeline. A packet waiting for a human does not stop other packets; new work can arrive at any time.
 
-要求 Node.js **22.5+**、DeepSeek Harness **0.2.2-rc.2+**（本机在 0.2.2-rc.5 验证）。0.2.2-rc.1 及更早读的是已移除的嵌套 `request` spec，agent 节点无法启动；开发示例还需要 Git 和可用的模型工具环境。以下使用 `desktop` profile，请按实际配置替换。
+**"Auto" means continuous scheduling of an already-authorized graph, not skipping approvals.** While the host is up, an idle or waiting run stays mounted and state is persisted. After a host stop, plugin reload or interrupted execution, uncertain work is never replayed automatically, and there is no promise of exactly-once Git/HTTP transactions.
 
-推荐固定 release，避免随开发分支变化：
+Project page: <https://lyingloong.github.io/dsh-auto-workflow/>
+
+## Highlights
+
+- **Durable run, concurrent packets.** Start once, enqueue new work later; a Human wait, a slow model or a failing packet does not tear down the run.
+- **Node types for real automation.** `agent`, `command`, `http`, `human`, `fanout`, `join`, `gate` and `subworkflow` cover model calls, scripts, remote APIs, approvals and scheduling boundaries.
+- **Explicit control plane.** Ordered model fallback, per-node concurrency, opt-in deadlines, pause/resume, queue switches, `recover:true` and Stop are engine features rather than prompt conventions.
+- **Artifacts, not inline blobs.** Large inputs and outputs are stored as references; checkpoints stay bounded.
+- **Live board.** Inspect node capacity, queues, Human decisions, run history and artifacts from a private loopback UI.
+- **A worked example.** A GitHub-clone development workflow with per-requirement branches/worktrees/PRs, GitHub requirement approval and GitHub-native PR merge decisions.
+
+## Requirements
+
+- Node.js **22.5+**
+- DeepSeek Harness **0.2.2-rc.2+** (verified on 0.2.2-rc.5)
+- For the development example: Git, `gh` authentication and a model route usable by subagents
+
+## Installation
+
+Pin a release instead of tracking the development branch:
 
 ```bash
 dsh plugin --profile desktop add github:lyingloong/dsh-auto-workflow#v1.2.0
 ```
 
-也可从 [v1.2.0 Release](https://github.com/lyingloong/dsh-auto-workflow/releases/tag/v1.2.0) 下载 `.tgz`，或安装本地 checkout：
+You can also install the release `.tgz` or a local checkout:
 
 ```bash
 dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow-1.2.0.tgz
 dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow
 ```
 
-安装后重启 DSH Host，再刷新 Web GUI。安装插件**不会**把示例脚本复制到业务仓库，也不会自动启动工作流。
+Restart the DSH host and refresh the Web GUI after installation. Installing the plugin **does not** copy the example scripts into your repository and **does not** start any workflow.
 
-## 快速使用：持续开发一个本地 GitHub clone
+## Quick start: keep developing a local GitHub clone
 
-唯一主示例是 [GitHub 项目持续开发](<docs/examples/development/README.md>)：工作流自己维护每需求分支、worktree 和 PR，外部 Codex/人可以审核并 merge 该 PR。
+The main example is the [GitHub project development workflow](docs/examples/development/README.md). It maintains one branch, worktree and PR per requirement, and moves both requirement approval and PR merge decisions to GitHub.
 
-1. **准备项目**：克隆你有权修改的 GitHub 仓库，配置 `origin` 和 `gh auth login`（或 `GITHUB_TOKEN`）；把示例脚本 materialize 到项目内并本地提交，使 checkout 干净。选择项目外的绝对、canonical `dataRoot`。
-2. **输入真实需求**：初始化业务存储（会放入 baseline discovery seeds），提交用户需求；可选用 `driver seed` 补充相关证据 seed。用户需求优先级固定为 `0`；示例不监听所有聊天，也不自动抓取 GitHub Issues。
-3. **授权并定义**：检查 [示例图](<docs/examples/development/workflow.json>) 与模型提示词，明确批准命令 allowlist，再调用 `auto_workflow_define`。HTTP 默认拒绝；agent 工具权限另行控制。
-4. **开始运行**：`auto_workflow_start` 绑定项目的绝对 `cwd` 和 `{ "dataRoot": "…" }`；`auto_workflow_run` 挂载运行。在同一 run 中向 `mine-gate` **仅 enqueue 一次** producer，后续需求继续送入现有运行。
-5. **审核与合并**：每个需求在 `auto/req-<id>` 分支和独立 worktree 中开发；第一次 snapshot 后推送分支并创建 draft PR。review pass + 结构化 brief 后 PR 标记 ready，外部 Codex/你可以直接 merge。若宽限期 `selfMergeAfterMs` 内仍未 merge，才进入 `self-merge-human`；Human 同意后工作流自己用 merge commit merge 该 PR，再验证并清理 worktree。默认 `after-verified-merge` 会删除 worktree（含开发期临时文件），提交和不可变记录保留。
+1. **Prepare a repository.** Clone a GitHub repository you may modify, configure `origin` and `gh auth login` (or `GITHUB_TOKEN`). Materialize the example scripts inside the repository, commit them locally, and pick a canonical `dataRoot` outside the project.
+2. **Submit real work.** Initialize the business store (it seeds baseline discovery directions), then submit a user requirement. User requirements get priority `0`; the example does not listen to every conversation or auto-import GitHub Issues.
+3. **Authorize and define.** Review the [example graph](docs/examples/development/workflow.json) and model prompts, explicitly approve the command allowlist, then call `auto_workflow_define`. HTTP is denied by default; agent tool permissions are controlled separately.
+4. **Run.** `auto_workflow_start` binds the repository's absolute `cwd` and `{ "dataRoot": "…" }`; `auto_workflow_run` mounts the run. Enqueue a producer to `mine-gate` **once** in that run; later requirements go into the same run.
+5. **Review and merge.** Each requirement is implemented on `auto/req-<id>` in its own worktree; the first snapshot pushes the branch and opens a draft PR. After the review passes and a decision-first brief is posted, the PR is marked ready. `pr-watch` reads authorized `[verdict=pass]` comments or formal reviews, unresolved threads and CI, and `pr-merge` merges with a merge commit once the configured `mergePolicy` is satisfied (default: an `@workflow merge` comment; also `auto` or `label`). Blocking feedback reworks the same branch. An external early merge is verified and cleaned up too.
 
-### 主业务图
+### Main graph
 
 ```mermaid
 flowchart TD
-  U[用户 intake · priority 0] --> Q[稳定 ID 的需求队列]
-  U -->|宽泛请求| IP[intake planner · low effort]
+  U[User intake · priority 0] --> Q[Requirement queue with stable IDs]
+  U -->|Broad request| IP[Intake planner · low effort]
   IP --> Q
-  S[已有证据 seeds] --> M[周期 producer / 挖掘]
+  S[Evidence seeds] --> M[Periodic producer / mining]
   M --> Q
-  Q --> R{需求来源与风险}
-  R -->|用户 / 挖掘 low| W[每需求一个 auto/req-* 分支和 attached worktree]
-  R -->|挖掘 mid / high| H[GitHub issue 需求审批]
+  Q --> R{Source and risk}
+  R -->|User / mined low| W[One auto/req-* branch and attached worktree]
+  R -->|Mined mid / high| H[GitHub issue requirement approval]
   H -->|approve| W
-  H -->|reject + 反馈| A[同 ID 修订需求]
+  H -->|reject + feedback| A[Same-ID requirement revision]
   A --> R
-  W --> E[engineer 池 · 最多 3]
-  E --> I[冻结 revision / epoch / one commit]
-  I --> P[push 分支并创建 draft PR]
-  P --> V[reviewer 池 · 最多 3，每需求一位]
+  W --> E[Engineer pool · max 3]
+  E --> I[Freeze revision / epoch / one commit]
+  I --> P[Push branch and create draft PR]
+  P --> V[Reviewer pool · max 3, one per requirement]
   V -->|revise| E
-  V -->|pass| G[Human brief / PR 门禁]
-  G -->|revise| E
-  G -->|reject| K[保留分支/worktree/PR]
-  G -->|approve| L[标记自己的 PR ready]
-  L --> X[Codex/人 external merge]
-  X --> T[验证合并 · 默认清理 worktree]
+  V -->|pass| B[Decision-first brief]
+  B --> L[Mark own PR ready]
+  L --> W2[pr-watch · authorized verdict/review + threads + CI]
+  W2 -->|revise| E
+  W2 -->|pass| M2[pr-merge · mergePolicy satisfied]
+  M2 --> T[merge commit + verify · cleanup by default]
+  L -->|external early merge| T
 ```
 
-根并发上限为 **6**；命令和挖掘也共享这六个槽位。3+3 是两个工作池上限，不是每项需求三位 reviewer。返修保留同一需求 ID、分支、worktree 和 PR；snapshot 把分支压成一个 commit。完整语义见 [业务流程与保证](<docs/workflow-summary.md>)。
+Root concurrency is **6**; commands and mining share those slots. 3+3 are pool limits, not three reviewers per requirement. Rework keeps the same requirement ID, branch, worktree and PR; a snapshot squashes the branch into one commit. See [Workflow guarantees](docs/workflow-summary.md) for the full semantics.
 
-## 七个工具
+## The seven tools
 
-| Tool | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| `auto_workflow_define` | 校验并保存节点图和用户批准的权限。 |
-| `auto_workflow_start` | 绑定不可变项目 `cwd`、预检并创建 run；不执行节点。 |
-| `auto_workflow_run` | 挂载或继续当前会话的常驻 job，立即返回。 |
-| `auto_workflow_enqueue` | 向现有 run 添加独立 packet；新工作不靠重启 run 输入。 |
-| `auto_workflow_decide` | 解决一个指定 Human token，不代替其他审批。 |
-| `auto_workflow_control` | 全局暂停/继续、单节点队列开关、`recover:true` 唤醒卡住的 live run，或显式 Stop。 |
-| `auto_workflow_status` | 只读查看队列、并发、Human 待办和私有看板 URL。 |
+| `auto_workflow_define` | Validate and store the node graph plus the user-approved permission grant. |
+| `auto_workflow_start` | Bind an immutable repository `cwd`, preflight and create one persistent run; does not execute nodes. |
+| `auto_workflow_run` | Mount or continue the session-owned long-lived job and return immediately. |
+| `auto_workflow_enqueue` | Add independent work to the existing run; new work never needs a restart. |
+| `auto_workflow_decide` | Resolve one specific Human token without affecting other approvals. |
+| `auto_workflow_control` | Pause/resume, switch one node queue, recover a parked live run with `recover:true`, or Stop. |
+| `auto_workflow_status` | Read-only view of queues, capacity, Human items and the private board URL. |
 
-节点类型包括 `agent`、`command`、`http`、`human`、`fanout`、`join`、`gate`、`subworkflow`。字段与协议见 [插件参考](<docs/plugin-summary.md>)；不要循环轮询 `run`。
+Node types are `agent`, `command`, `http`, `human`, `fanout`, `join`, `gate` and `subworkflow`. See the [plugin reference](docs/plugin-summary.md) for fields and protocols. Do not poll `auto_workflow_run`.
 
-## 看板
+## Permissions
 
-- **Human 待处理详情**：点“查看详情与输入”打开独立卡片，按需读取该 token 的输入 JSON，并在同一处填写留言、查看 outcome 后决策。
-- **节点图模式**：工具栏“简化”隐藏 `busy-*` 重试门，只保留业务节点；“完整”显示全部边。
-- **节点方块**：每个节点是一个圆角方块，空闲/运行/等待/错误/关闭使用不同颜色；点击方块打开节点详情、数据包和历史。
+Command and HTTP access is **deny by default**. Before defining a graph with privileged nodes, decide on full access or an allowlist and pass it to `auto_workflow_define`:
 
-## 边界与验证
+```json
+{ "command": { "mode": "allowlist", "allow": ["node", "pnpm"] }, "http": { "mode": "allowlist", "allow": ["api.github.com"] } }
+```
 
-- 插件负责通用调度和引用；需求优先级、Git worktree、审查与合并策略属于示例业务代码。
-- command/HTTP 权限默认 deny。命令 allowlist 不是文件系统沙箱，也不替代 agent 工具权限。
-- 暂停和禁用节点不会取消在途工作；Stop 不等于回滚。失败或中断后先检查副作用，再显式恢复或新建 run。失败 token 归档为历史证据后不再占用 live 状态；`recover:true` 清理陈旧 pause/error 并唤醒，不重放失败工作。
-- 单 Host、本地文件锁；不是分布式队列、外部审批服务或 exactly-once Git/HTTP 事务。工作流会 push 自己的需求分支并创建/更新 PR，但不会 merge 远端、不会自行批准 GitHub PR，也不会部署。
-- 包版本 `1.2.0`、定义 `apiVersion: 2`、运行状态 `version: 3`、示例业务存储 `version: 3` 是不同层的版本号，不要求相同。废弃开发序列与迁移边界见 [更新记录](<CHANGELOG.md>)。
+The runtime enforces the grant; the graph cannot widen it silently. A command allowlist is not a filesystem sandbox and does not replace the host's agent tool policy.
 
-已验证范围、真实模型执行概况与限制集中在 [验证说明](<docs/verification.md>)。从源码 checkout 运行完整回归：
+## Board
+
+- **Human details:** inspect a waiting token's input JSON and record its outcome in one place.
+- **Graph modes:** “Simplified” hides `busy-*` retry gates; “Full” shows every edge.
+- **Node tiles:** idle, running, waiting, error and closed states are visually distinct; click a tile for packets and history.
+
+## Design boundaries
+
+- The plugin owns generic scheduling and references; requirement priority, Git worktrees, review policy and merge policy belong to the example.
+- A pause or a disabled node does not cancel in-flight work; Stop is not a rollback. Inspect side effects before recovering or starting a new run.
+- Failed/interrupted attempts remain evidence, and failed tokens are archived from live scheduler state. `recover:true` clears stale pause/error state without replaying work.
+- Single host, local file locks. Not a distributed queue, an external approval service, or exactly-once Git/HTTP transactions. The example pushes its own requirement branches and merges its own PRs under `mergePolicy`, but does not rewrite other people's PRs or deploy anything.
+
+## Development
 
 ```bash
-npm test
+git clone https://github.com/lyingloong/dsh-auto-workflow.git
+cd dsh-auto-workflow
+npm test            # full regression suite
+npm run verify:release
 ```
 
-继续阅读：[文档导航](<docs/README.md>) · [运行生命周期与排障](<docs/run-lifecycle.md>) · [v1.2.0 发布说明](<docs/releases/v1.2.0.md>) · [v1.0.0 历史发布](<docs/releases/v1.0.0.md>)。
+Repository conventions live in [AGENTS.md](https://github.com/lyingloong/dsh-auto-workflow/blob/main/AGENTS.md). Bug reports and pull requests are welcome; please include a minimal reproduction and keep tests deterministic and offline.
+
+## Versioning
+
+Package `1.2.0`, graph `apiVersion: 2`, run state `version: 3` and the example business store `version: 4` are separate contracts. The example's v3 store must be upgraded explicitly with `driver migrate`; it is never migrated in place. See [CHANGELOG.md](CHANGELOG.md) for the release history.
+
+## Documentation
+
+- [Documentation map](docs/README.md)
+- [Run lifecycle and troubleshooting](docs/run-lifecycle.md)
+- [Workflow guarantees](docs/workflow-summary.md)
+- [Development example](docs/examples/development/README.md)
+- [Release notes: v1.2.0](docs/releases/v1.2.0.md) · [v1.0.0](docs/releases/v1.0.0.md)
+
+## License
+
+[MIT](LICENSE)
