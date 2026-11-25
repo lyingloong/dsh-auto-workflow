@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { git, checkedWorktree, targetReady, ancestor, commitId, clean } from './worktrees.mjs';
 import { gh, ghJson, repoCoordinates, classifyGitHubError, githubBackoff, GITHUB_RETRY_LIMIT } from './github.mjs';
 import { redactForPublic, REVIEW_LABEL, APPROVED_LABEL, REJECTED_LABEL, REQUIREMENT_LABELS } from './requirement-review.mjs';
-import { MERGE_LABEL, MERGE_INTENT_LABEL, evaluateFeedback } from './pr-feedback.mjs';
+import { MERGE_LABEL, MERGE_INTENT_LABEL, AUTHORIZED_ASSOCIATIONS, evaluateFeedback } from './pr-feedback.mjs';
 
 const PR_FIELDS = 'number,url,state,isDraft,headRefOid,mergeCommit,mergedAt,closed,reviewDecision,body,labels,statusCheckRollup';
 const STAGES = new Set(['implementing', 'verifying', 'reviewing', 'repairing', 'merge-ready', 'blocked']);
@@ -196,7 +196,10 @@ async function feedbackFor(store, item, pr) {
   ]);
   const reviewers = await authorizedReviewers(store, reviews);
   const windowStart = item.pr?.feedbackWindowStart ?? item.pr?.readyAt ?? new Date(0).toISOString();
-  return evaluateFeedback({
+  const mergeOverride = item.pr?.mergeIntent?.head === pr.headRefOid
+    ? { id: item.pr.mergeIntent.commentId, actor: item.pr.mergeIntent.actor, at: item.pr.mergeIntent.at, head: item.pr.mergeIntent.head }
+    : null;
+  const result = evaluateFeedback({
     head: pr.headRefOid,
     windowStart,
     comments,
@@ -207,7 +210,9 @@ async function feedbackFor(store, item, pr) {
     unresolved,
     mergePolicy: store.config.mergePolicy,
     labels: pr.labels,
+    mergeIntentOverride: mergeOverride,
   });
+  return { ...result, comments, windowStart, evidence: evidenceFor(comments, windowStart) };
 }
 
 function waitingReason(feedback) {
@@ -249,6 +254,39 @@ function attentionProtocol(item) {
 }
 function backoffResult(item, reason) {
   return { item, outcome: 'waiting', pr: item.pr, feedback: null, reason };
+}
+
+const INTENT_COMMAND = /^\s*@workflow\s+(?!merge\b|stop\b)([\s\S]+)$/i;
+function commentTime(entry) {
+  return Date.parse(entry?.created_at ?? entry?.createdAt ?? '');
+}
+/** Recent comments become bounded, untrusted evidence for the intent step. */
+function evidenceFor(comments = [], windowStart) {
+  const start = Date.parse(windowStart ?? '') || 0;
+  return comments
+    .filter(entry => (commentTime(entry) || 0) >= start)
+    .slice(-15)
+    .map(entry => ({
+      commentId: Number(entry.id),
+      author: entry.user?.login ?? entry.author?.login ?? 'unknown',
+      association: entry.author_association ?? entry.authorAssociation ?? '',
+      role: /\[role=codex\]/i.test(String(entry.body ?? '')) ? 'codex' : null,
+      body: String(entry.body ?? '').slice(0, 1200),
+    }));
+}
+/** The newest authorized natural-language @workflow command, if any. */
+function commandFor(item, feedback) {
+  const handled = new Set(item.pr?.handledIntentIds ?? []);
+  const start = Date.parse(feedback.windowStart ?? '') || 0;
+  const commands = (feedback.comments ?? [])
+    .filter(entry => !handled.has(Number(entry.id)))
+    .filter(entry => AUTHORIZED_ASSOCIATIONS.has(String(entry.author_association ?? '').toUpperCase()))
+    .filter(entry => (commentTime(entry) || 0) >= start)
+    .filter(entry => INTENT_COMMAND.test(String(entry.body ?? '')) && !/\[verdict=/i.test(String(entry.body ?? '')))
+    .sort((a, b) => Number(a.id) - Number(b.id));
+  const entry = commands.at(-1);
+  if (!entry) return null;
+  return { commentId: Number(entry.id), body: String(entry.body ?? '').trim().slice(0, 2000), author: entry.user?.login ?? 'unknown', at: entry.created_at ?? '' };
 }
 
 /** Persist the protocol block and merge-ready label for the current decision. */
@@ -303,13 +341,13 @@ async function updatePr(store, item, { create = false, state } = {}) {
       pr = await viewPr(store, pr.number);
     }
     if (pr.state === 'MERGED') {
-      item.pr = normalisePr(pr);
+      item.pr = { ...(item.pr ?? {}), ...normalisePr(pr) };
       throw new Error('The PR is already merged; do not publish or rework this requirement');
     }
     await gh(store.config.repoRoot, 'pr', 'edit', String(pr.number), '--title', title, '--body', body);
     pr = await viewPr(store, pr.number);
   }
-  item.pr = { ...normalisePr(pr), protocol };
+  item.pr = { ...(item.pr ?? {}), ...normalisePr(pr), protocol };
   item.pr.publishedAt = item.pr.publishedAt ?? new Date().toISOString();
   return item.pr;
 }
@@ -352,7 +390,7 @@ export async function ready(store, id, claimId) {
     }
     if (before.state === 'CLOSED') throw new Error('PR is closed; rework the requirement before marking ready');
     if (before.isDraft) await gh(store.config.repoRoot, 'pr', 'ready', String(before.number));
-    item.pr = normalisePr(await viewPr(store, item.pr.number));
+    item.pr = { ...item.pr, ...normalisePr(await viewPr(store, item.pr.number)) };
     if (item.pr.state === 'MERGED') {
       await verifyExternalMerge(store, item);
       return { item, outcome: 'merged', pr: item.pr };
@@ -446,6 +484,10 @@ export async function watch(store, id, claimId) {
         mergeIntent: feedback.mergeIntent, mergeSatisfied: feedback.mergeSatisfied,
         ci: feedback.ci, unresolved: feedback.unresolved, checkedAt: new Date().toISOString(),
       };
+      const command = commandFor(item, feedback);
+      if (command && feedback.verdict !== 'revise' && feedback.unresolved === 0) {
+        return { item, outcome: 'interpret', pr, feedback, command, evidence: feedback.evidence, head: feedback.head, reason: 'authorized natural-language command' };
+      }
       const protocol = await syncProtocol(store, item, pr, feedback);
       const outcome = feedback.verdict === 'revise' || feedback.unresolved > 0
         ? 'revise'
@@ -512,6 +554,8 @@ export async function merge(store, id, claimId) {
       }
       if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback: null, reason: 'PR was closed before merge' };
       let feedback = await feedbackFor(store, item, pr);
+      const pending = commandFor(item, feedback);
+      if (pending) return { item, outcome: 'waiting', pr, feedback, reason: `Natural-language command #${pending.commentId} is pending interpretation` };
       if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
         await syncProtocol(store, item, pr, feedback);
         return { item, outcome: 'revise', pr, feedback };
@@ -532,6 +576,8 @@ export async function merge(store, id, claimId) {
       }
       if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback, reason: 'PR was closed during merge verification' };
       feedback = await feedbackFor(store, item, pr);
+      const late = commandFor(item, feedback);
+      if (late) return { item, outcome: 'waiting', pr, feedback, reason: `Natural-language command #${late.commentId} arrived during merge verification` };
       if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
         await syncProtocol(store, item, pr, feedback);
         return { item, outcome: 'revise', pr, feedback };
@@ -584,6 +630,53 @@ export async function merge(store, id, claimId) {
       return backoffResult(item, `GitHub transient failure (${failed.failures}/${GITHUB_RETRY_LIMIT}); the next merge attempt re-reads the PR first: ${failed.lastError}`);
     }
   }), 'integration');
+}
+
+/** Apply one interpreted natural-language command to the current PR head. */
+export async function applyIntent(store, id, claimId, { action, commentId, head, summary, cited, error, actor } = {}) {
+  const current = await store.get(id);
+  if ((current.pr?.handledIntentIds ?? []).includes(Number(commentId))) {
+    const stored = current.pr.intent?.action ?? action;
+    return { item: current, outcome: stored === 'merge' ? 'merge' : stored === 'revise' ? 'revise' : 'waiting', duplicate: true };
+  }
+  const item = await store.applyPrIntent(id, claimId, { action, commentId, head, summary, cited, error, actor });
+  const number = item.pr?.number;
+  if (action === 'revise' && number) await setMergeLabel(store, number, false);
+  if (number && (action === 'stop' || action === 'clarify')) {
+    const body = error
+      ? '自动判定暂时不可用，请使用明确命令或稍后重试。'
+      : action === 'stop'
+        ? '已收到停止指令，保持当前状态，等待下一步明确命令。'
+        : '无法根据这条评论自动判定。请使用明确命令：`@workflow merge`、`@workflow revise`，或直接说明要修改的具体点。';
+    await gh(store.config.repoRoot, 'pr', 'comment', String(number), '--body', body);
+  }
+  const outcome = action === 'merge' ? 'merge' : action === 'revise' ? 'revise' : 'waiting';
+  return { item, outcome };
+}
+
+/** Post one Chinese "please check" comment after a rework publishes a new head. */
+export async function notifyRework(store, id, claimId) {
+  return store.mutate(id, claimId, async item => {
+    const brief = item.pr?.reworkBrief;
+    const head = item.implementation?.commit;
+    if (!brief || !head || !item.pr?.number) return { item, outcome: 'complete', notified: false };
+    if (item.pr.notifiedHead === head) return { item, outcome: 'complete', notified: false };
+    const mapping = new Map((item.implementation?.rework ?? []).map(row => [Number(row.commentId), row]));
+    const lines = (brief.items ?? []).map(entry => {
+      const row = mapping.get(Number(entry.commentId));
+      return `- #${entry.commentId} · ${row?.status ?? '未声明'}${row?.note ? ` — ${row.note}` : ''}`;
+    });
+    const body = [
+      `已更新本 PR 到 head \`${head.slice(0, 12)}\`，请检查。`,
+      '',
+      ...(brief.summary ? [brief.summary, ''] : []),
+      ...(lines.length ? ['逐条反馈：', ...lines, ''] : []),
+      '如需继续修改，请评论 `@workflow <具体意见>`；确认合并请使用配置的合并命令。',
+    ].join('\n');
+    await gh(store.config.repoRoot, 'pr', 'comment', String(item.pr.number), '--body', body);
+    item.pr.notifiedHead = head;
+    return { item, outcome: 'complete' };
+  });
 }
 
 function templateBody() {

@@ -81,6 +81,11 @@ export function normalizeDefinition(raw, { nested = false, depth = 0 } = {}) {
     }
     if (node.type === 'http') text(config.url, `${path}.config.url`);
     if (['agent', 'human'].includes(node.type) && config.outcomes !== undefined && (!Array.isArray(config.outcomes) || !config.outcomes.length || config.outcomes.some(item => typeof item !== 'string' || !item))) fail(`${path}.config.outcomes`, 'must be a non-empty array of outcome strings');
+    if (node.type === 'agent' && config.fallbackOutcome !== undefined) {
+      if (typeof config.fallbackOutcome !== 'string' || !config.fallbackOutcome) fail(`${path}.config.fallbackOutcome`, 'must be a non-empty outcome string');
+      const allowed = Array.isArray(config.outcomes) && config.outcomes.length ? config.outcomes : config.outcome ? [config.outcome] : ['complete'];
+      if (!allowed.includes(config.fallbackOutcome)) fail(`${path}.config.fallbackOutcome`, 'must be one of the node outcomes');
+    }
     if (node.type === 'fanout') {
       text(config.items, `${path}.config.items`); text(config.target, `${path}.config.target`, 80);
       if (config.join !== undefined) text(config.join, `${path}.config.join`, 80);

@@ -70,18 +70,20 @@ export function mergeIntent(comments = [], { head, windowStart }) {
  */
 export function evaluateFeedback({
   head, windowStart, comments = [], reviews = [], authorizedReviewers = new Set(),
-  reviewDecision: aggregate = null, ci = 'none', unresolved = 0, mergePolicy = 'comment', labels = [],
+  reviewDecision: aggregate = null, ci = 'none', unresolved = 0, mergePolicy = 'comment', labels = [], mergeIntentOverride = null,
 } = {}) {
   const decisions = [
     ...comments.map(comment => commentDecision(comment, { head, windowStart })).filter(Boolean),
     ...reviews.map(review => reviewDecision(review, { head, authorized: authorizedReviewers.has(authorOf(review)) })).filter(Boolean),
   ].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0) || a.id - b.id);
   const latest = decisions.at(-1) ?? null;
+  const intent = mergeIntentOverride ?? mergeIntent(comments, { head, windowStart });
   let verdict = latest?.verdict ?? (aggregate === 'APPROVED' ? 'pass' : aggregate === 'CHANGES_REQUESTED' ? 'revise' : null);
+  // An explicit authorized merge intent (a natural-language merge command or an
+  // @workflow merge comment) is itself the operator's pass decision when no
+  // other verdict exists; blocking feedback still wins.
+  if (!verdict && mergePolicy === 'comment' && intent) verdict = 'pass';
   if (unresolved > 0) verdict = 'revise';
-  const intent = mergeIntent(comments, { head, windowStart });
-  // A repository without configured checks reports `none`; pr-init records that
-  // as a repository-hardening warning rather than blocking the merge forever.
   const mergeSatisfied = verdict === 'pass' && (ci === 'pass' || ci === 'none') && unresolved === 0
     && (mergePolicy === 'auto' || (mergePolicy === 'label' ? labels.includes(MERGE_INTENT_LABEL) : Boolean(intent)));
   return { head, verdict, decision: latest, mergeIntent: intent, mergeSatisfied, ci, unresolved, mergePolicy };

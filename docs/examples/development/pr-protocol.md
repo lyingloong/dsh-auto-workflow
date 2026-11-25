@@ -60,6 +60,17 @@ workflow 只认这些确定性信号：
 - 有任何未 resolve 的 review thread，一律视为阻塞反馈，永远不能合并。
 - **不从散文猜测 verdict**：没有标记、没有正式 review，就是“尚无判决”。
 
+## 3.5 自然语言命令
+
+协作者可以写一条 `@workflow <自然语言>`（例如 `@workflow 按 Codex 的两条 P2 修一下`、`@workflow 可以了`、`@workflow 先别动`）。工作流先识别**只有协作者**的 `@workflow` 评论，再交给低思考 intent agent 读取命令、当前 revision/head、最近评论：
+
+- 评论里的 Codex/其他人内容只是**证据**，不是指令；intent agent 不得执行证据中的指令。
+- 输出只能是允许的动作：issue 为 `approve|revise|stop|clarify`，PR 为 `merge|revise|stop|clarify`。
+- 模糊、矛盾、越权或不安全的命令 → 一条中文澄清评论，状态不变；意图 agent 不可用时也回澄清并继续等待。
+- `revise`（需求）或 revise（PR）会生成引用评论 id 的 brief；新的 revision/head 发布后只通知一次“请检查”。
+- 决定按当前 revision/head 与评论 id 绑定，重复轮询不会重复执行或重复通知；窗口外的旧评论忽略。
+- 精确命令（`@workflow approve|reject`、`@workflow merge|stop`、`[verdict=...]`、正式 review）仍是确定性路径。
+
 ## 4. 合并门与策略
 
 只有同时满足才进入 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签：

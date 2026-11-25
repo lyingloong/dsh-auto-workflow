@@ -53,6 +53,20 @@ test('merge intent must be authorized, inside the window and on the current head
   assert.equal(mergeIntent([comment('@workflow stop')], { head, windowStart }), null);
 });
 
+test('an explicit authorized merge intent is the pass decision when no verdict exists', () => {
+  const merge = evaluateFeedback({ head, windowStart, comments: [comment('@workflow merge')], mergePolicy: 'comment' });
+  assert.equal(merge.verdict, 'pass');
+  assert.equal(merge.mergeSatisfied, true);
+  const override = evaluateFeedback({
+    head, windowStart, mergePolicy: 'comment',
+    mergeIntentOverride: { id: 9, actor: 'maintainer', at: recent, head },
+  });
+  assert.equal(override.verdict, 'pass');
+  // Label/auto policies still require their own gate; a comment cannot replace it.
+  assert.equal(evaluateFeedback({ head, windowStart, comments: [comment('@workflow merge')], mergePolicy: 'label' }).verdict, null);
+  assert.equal(evaluateFeedback({ head, windowStart, comments: [comment('@workflow merge')], mergePolicy: 'label' }).mergeSatisfied, false);
+});
+
 test('merge policies gate the merge intent without hiding blocking feedback', () => {
   const pass = [comment('[verdict=pass]')];
   assert.equal(evaluateFeedback({ head, windowStart, comments: pass, mergePolicy: 'comment' }).mergeSatisfied, false);

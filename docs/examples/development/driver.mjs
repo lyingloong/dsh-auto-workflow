@@ -117,7 +117,29 @@ async function executeStage(name, input) {
   }
   if (name === 'check-requirement-issue') {
     const checked = await requirementReview.check(store, id, claimId);
-    return result(checked.outcome, store.envelope(checked.item, { github: checked.item.github ?? null, reason: checked.reason ?? null }));
+    return result(checked.outcome, store.envelope(checked.item, {
+      github: checked.item.github ?? null,
+      reason: checked.reason ?? null,
+      revision: checked.revision ?? checked.item.revision,
+      command: checked.command ?? null,
+      evidence: checked.evidence ?? [],
+    }));
+  }
+  if (name === 'requirement-intent-apply') {
+    const changed = await requirementReview.applyIntent(store, id, claimId, {
+      action: input.action,
+      commentId: input.commentId,
+      revision: input.revision,
+      summary: input.summary,
+      cited: input.cited,
+      error: input.error,
+      actor: input.actor,
+    });
+    return result(changed.outcome, store.envelope(changed.item, { github: changed.item.github ?? null }));
+  }
+  if (name === 'notify-requirement-revision') {
+    const changed = await requirementReview.notifyRevision(store, id, claimId);
+    return result(changed.outcome, store.envelope(changed.item, { github: changed.item.github ?? null }));
   }
   if (name === 'intake-apply') {
     const applied = await store.applyIntake(id, claimId, { requirement: input.requirement, seeds: input.seeds, reason: input.reason });
@@ -141,7 +163,34 @@ async function executeStage(name, input) {
   }
   if (name === 'pr-watch' || name === 'pr-merge') {
     const changed = await (name === 'pr-watch' ? pullRequests.watch : pullRequests.merge)(store, id, claimId);
-    return result(changed.outcome, store.envelope(changed.item, { ...(changed.item.implementation ?? {}), pr: changed.item.pr ?? null, feedback: changed.feedback ?? null, reason: changed.reason ?? null }));
+    return result(changed.outcome, store.envelope(changed.item, {
+      ...(changed.item.implementation ?? {}),
+      pr: changed.item.pr ?? null,
+      feedback: changed.feedback ?? null,
+      reason: changed.reason ?? null,
+      ...(name === 'pr-watch' ? {
+        command: changed.command ?? null,
+        evidence: changed.evidence ?? [],
+        head: changed.head ?? changed.feedback?.head ?? null,
+        mergePolicy: store.config.mergePolicy,
+      } : {}),
+    }));
+  }
+  if (name === 'pr-intent-apply') {
+    const changed = await pullRequests.applyIntent(store, id, claimId, {
+      action: input.action,
+      commentId: input.commentId,
+      head: input.head,
+      summary: input.summary,
+      cited: input.cited,
+      error: input.error,
+      actor: input.actor,
+    });
+    return result(changed.outcome, store.envelope(changed.item, { pr: changed.item.pr ?? null }));
+  }
+  if (name === 'notify-pr-rework') {
+    const changed = await pullRequests.notifyRework(store, id, claimId);
+    return result(changed.outcome, store.envelope(changed.item, { pr: changed.item.pr ?? null }));
   }
   if (name === 'pr-request-changes') {
     const changed = await pullRequests.requestChanges(store, id, claimId, { feedback: input.feedback ?? null, reason: input.reason ?? null });

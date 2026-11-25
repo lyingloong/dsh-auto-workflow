@@ -593,6 +593,69 @@ export class DevelopmentStore {
       };
     });
   }
+  /**
+   * Apply one authorized natural-language command to a requirement revision.
+   * The command comment and its cited evidence become the auditable brief.
+   */
+  async applyRequirementIntent(id, claimId, { action, commentId, revision, summary, cited, error, actor } = {}) {
+    return this.mutate(id, claimId, item => {
+      if (!['approve', 'revise', 'stop', 'clarify'].includes(action)) throw new Error('Invalid requirement intent action');
+      if (!item.github || item.status !== 'requirement-pending') throw new Error('Requirement is not pending review');
+      if (revision !== item.revision || item.github.revision !== item.revision) throw new Error('Stale requirement intent revision');
+      const idNumber = Number(commentId);
+      if (item.intent?.commentId === idNumber) return item;
+      if (!Number.isSafeInteger(idNumber) || idNumber <= Number(item.github.commentFloor ?? 0)) throw new Error('Requirement intent comment is outside the current window');
+      const items = intentItems(cited);
+      const actorText = actor ? text(actor, 'intent actor', 200) : 'github:intent';
+      const noteText = summary ? text(summary, 'intent summary', 1000) : error ? text(error, 'intent error', 500) : '';
+      item.intent = { action, commentId: idNumber, revision: item.revision, summary: noteText, cited: items, actor: actorText, at: new Date().toISOString() };
+      if (action === 'approve') {
+        item.requirementApproval = { decision: 'approve', revision: item.revision, actor: actorText, reason: noteText || 'natural-language approval', commentId: idNumber };
+        item.status = 'ready';
+      } else if (action === 'revise') {
+        item.revisionBrief = { revision: item.revision + 1, source: 'intent', commentId: idNumber, summary: noteText || 'Revise this requirement', items, createdAt: new Date().toISOString() };
+        item.requirementApproval = { decision: 'reject', revision: item.revision, actor: actorText, note: item.revisionBrief.summary, commentId: idNumber };
+        item.feedback.push({ scope: 'requirement', revision: item.revision, commentId: idNumber, note: item.revisionBrief.summary, cited: items.map(entry => entry.commentId) });
+        item.status = 'requirement-revision';
+      }
+      item.github = {
+        ...item.github,
+        commentFloor: Math.max(Number(item.github.commentFloor ?? 0), idNumber),
+        intent: item.intent,
+      };
+      return item;
+    });
+  }
+  /**
+   * Apply one authorized natural-language command to a PR head. Merge intent is
+   * consumed by the merge gate; revise stores a rework brief on the same PR.
+   */
+  async applyPrIntent(id, claimId, { action, commentId, head, summary, cited, error, actor } = {}) {
+    return this.mutate(id, claimId, item => {
+      if (!['merge', 'revise', 'stop', 'clarify'].includes(action)) throw new Error('Invalid PR intent action');
+      if (!['human-pending', 'approved'].includes(item.status)) throw new Error('PR intent requires a reviewed requirement');
+      if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
+      if (!item.pr.headRefOid || head !== item.pr.headRefOid) throw new Error('Stale PR intent head');
+      const idNumber = Number(commentId);
+      if (!Number.isSafeInteger(idNumber) || idNumber <= 0) throw new Error('Invalid PR intent comment');
+      const handled = item.pr.handledIntentIds ?? [];
+      if (handled.includes(idNumber)) return item;
+      const items = intentItems(cited);
+      const actorText = actor ? text(actor, 'intent actor', 200) : 'github:intent';
+      const noteText = summary ? text(summary, 'intent summary', 1000) : error ? text(error, 'intent error', 500) : '';
+      item.pr.intent = { action, commentId: idNumber, head, summary: noteText, cited: items, actor: actorText, at: new Date().toISOString() };
+      item.pr.handledIntentIds = [...handled, idNumber];
+      if (action === 'merge') {
+        item.pr.mergeIntent = { commentId: idNumber, actor: actorText, head, summary: noteText, at: new Date().toISOString() };
+      } else if (action === 'revise') {
+        item.pr.reworkBrief = { commentId: idNumber, head, summary: noteText || 'Rework this PR', items, source: 'intent', createdAt: new Date().toISOString() };
+        item.approval = null;
+        item.status = 'engineering-ready';
+        item.feedback.push({ scope: 'pr', key: `intent:${idNumber}`, head, decision: 'revise', actor: actorText, note: item.pr.reworkBrief.summary, cited: items.map(entry => entry.commentId), at: new Date().toISOString() });
+      }
+      return item;
+    });
+  }
   async reviseRequirement(id, claimId, proposal) {
     return this.mutate(id, claimId, item => {
       if (item.status !== 'requirement-revision' || proposal.expectedRevision !== item.revision) throw new Error('Stale or unrequested requirement revision');
@@ -624,6 +687,20 @@ function normalizeTags(tags = []) { if (!Array.isArray(tags) || tags.length > 30
 function bullets(values, name, max, length) {
   if (!Array.isArray(values) || values.length > max) throw new Error(`Invalid ${name}`);
   return values.map(value => text(value, name, length));
+}
+/** Bounded citations for a natural-language decision; ids must come from context. */
+function intentItems(values) {
+  if (values === undefined || values === null) return [];
+  if (!Array.isArray(values) || values.length > 10) throw new Error('Invalid intent citations');
+  return values.map(entry => {
+    const commentId = Number(entry?.commentId);
+    if (!Number.isSafeInteger(commentId) || commentId <= 0) throw new Error('Invalid cited comment id');
+    return {
+      commentId,
+      snippet: entry?.snippet ? text(entry.snippet, 'cited snippet', 500) : '',
+      request: entry?.request ? text(entry.request, 'cited request', 500) : '',
+    };
+  });
 }
 function decisionSummary(value) {
   const compact = String(value ?? '').replace(/\s+/g, ' ').trim();

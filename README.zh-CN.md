@@ -53,7 +53,7 @@ dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow
 2. **提交真实需求。** 初始化业务存储（会写入 baseline discovery seeds），再提交用户需求。用户需求优先级固定为 `0`；示例不监听所有聊天，也不自动导入 GitHub Issues。
 3. **授权并定义。** 检查[示例图](docs/examples/development/workflow.json)与模型提示词，明确批准命令 allowlist，再调用 `auto_workflow_define`。HTTP 默认拒绝；agent 工具权限另行控制。
 4. **开始运行。** `auto_workflow_start` 绑定仓库绝对 `cwd` 和 `{ "dataRoot": "…" }`，`auto_workflow_run` 挂载 run。在同一个 run 中向 `mine-gate` **只 enqueue 一次** producer；后续需求继续送入现有 run。
-5. **审核与合并。** 每个需求在 `auto/req-<id>` 分支和独立 worktree 中开发；第一次 snapshot 后推送分支并创建 draft PR。review pass + decision-first brief 后 PR 标记 ready；`pr-watch` 读取协作者的 `[verdict=pass]` 评论或正式 review、未 resolve thread 和 CI，`pr-merge` 在 `mergePolicy` 满足后用 merge commit 合并（默认要求 `@workflow merge` 评论，也支持 `auto` / `label`）。阻塞反馈回到同一分支返修；外部提前 merge 同样会被验证并清理。
+5. **审核与合并。** 每个需求在 `auto/req-<id>` 分支和独立 worktree 中开发；第一次 snapshot 后推送分支并创建 draft PR。review pass + decision-first brief 后 PR 标记 ready；`pr-watch` 读取协作者的 `[verdict=pass]` 评论或正式 review、未 resolve thread 和 CI，`pr-merge` 在 `mergePolicy` 满足后用 merge commit 合并（默认要求 `@workflow merge` 评论，也支持 `auto` / `label`）。协作者也可以写自然语言 `@workflow` 命令：意图步骤会引用相关评论，返修后只发一次"请检查"并附逐条处理结果。阻塞反馈回到同一分支返修；外部提前 merge 同样会被验证并清理。
 
 ### 主业务图
 

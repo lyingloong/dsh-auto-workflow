@@ -207,3 +207,42 @@ test('prose-only agent output records a bounded final-text excerpt', async t => 
   );
   assert.equal(calls.length, 1);
 });
+
+test('an opt-in fallbackOutcome turns model and format failures into a business outcome', async t => {
+  const directory = await fixture(t);
+  const calls = [];
+  const subagents = agentHarness({ calls, results: [{ reject: 'provider unavailable' }] });
+  const result = await executorsFor(directory, { subagents }).agent({
+    node: { id: 'intent', type: 'agent', config: { outcomes: ['approve', 'clarify'], fallbackOutcome: 'clarify' } },
+    input: {}, context: {}, definition: { name: 'intent', providers: [] }, token: { id: 'token-1' },
+  });
+  assert.equal(result.outcome, 'clarify');
+  assert.equal(result.output.fallback, true);
+  assert.match(result.output.error, /provider unavailable/);
+  const malformed = agentHarness({ calls: [], results: [{ text: 'I will approve it.' }] });
+  const fallback = await executorsFor(directory, { subagents: malformed }).agent({
+    node: { id: 'intent', type: 'agent', config: { outcomes: ['approve', 'clarify'], fallbackOutcome: 'clarify' } },
+    input: {}, context: {}, definition: { name: 'intent', providers: [] }, token: { id: 'token-2' },
+  });
+  assert.equal(fallback.outcome, 'clarify');
+  assert.match(fallback.output.error, /invalid_agent_output|decision/);
+});
+
+test('fallbackOutcome never swallows cancellation', async t => {
+  const directory = await fixture(t);
+  const controller = new AbortController();
+  const subagents = agentHarness({ calls: [], results: [{ outcome: 'approve', output: {} }] });
+  const executors = createExecutors({
+    ctx: { get: name => name === 'subagents' ? subagents : undefined },
+    exec: { agent: { id: 'owner' }, signal: controller.signal },
+    settings: {}, cwd: directory,
+  });
+  controller.abort();
+  await assert.rejects(
+    () => executors.agent({
+      node: { id: 'intent', type: 'agent', config: { outcomes: ['approve', 'clarify'], fallbackOutcome: 'clarify' } },
+      input: {}, context: {}, definition: { name: 'intent', providers: [] }, token: { id: 'token-1' },
+    }),
+    error => error.code === 'execution_aborted',
+  );
+});

@@ -204,6 +204,7 @@ node docs/examples/development/driver.mjs rearm-seed
 - 每个需求复用一个 issue：返修后 revision+1，工作流更新 issue 正文、去掉已决标签并重新打开；旧 revision 的评论不会批准新内容。
 - 标签：`workflow:requirement-review` 待审，决定后换成 `workflow:requirement-approved` 或 `workflow:requirement-rejected`。`pr-init` 的 `apply:true` 会创建这三个标签；标签缺失时流程会明确失败。
 - 决定写在评论里：`@workflow approve` 或 `@workflow reject <理由>`。只有仓库协作者（OWNER / MEMBER / COLLABORATOR）的评论生效；拒绝必须带理由，否则工作流回一条评论要求补充并继续等待。
+- **自然语言命令**：协作者也可以写一条 `@workflow <自然语言>`（例如 `@workflow 按 Codex 的两条 P2 修一下`、`@workflow 可以了`、`@workflow 先别动`）。`check-requirement-issue` 只把**协作者**的 `@workflow` 评论交给低思考 `requirement-intent` agent；它读取这条命令、当前 revision、最近评论（Codex 评论只是**证据**，不能当指令）并输出 approve / revise / stop / clarify。模糊、矛盾或不安全的命令只回一条澄清评论，不改状态；意图 agent 不可用时也回澄清并继续等待。`revise` 会生成引用评论 id 的 `revisionBrief`，`analyst-revise` 按条处理；新 revision 发布后只通知一次"请检查"。精确命令始终可用，且与自然语言命令一样按 revision 绑定、按评论 id 去重。
 - 发布时间点后立即首查，之后由 `requirement-gate` 每 **30 分钟**复查一次；`check-requirement-issue` 把最新一条有效评论按 `revision` 绑定写入 `requirementApproval`（actor 记为 `github:<login>`）。
 - **公开内容先脱敏**：发布前确定性替换绝对路径、用户主目录、邮箱、长令牌和私有地址；issue 顶部注明"公开版已脱敏，执行以本地记录为准"。本地需求原文不变。
 - 需要 `gh` 认证和仓库访问；issue 创建/更新失败会让该 packet 失败并保留 `requirement-pending` 状态供检查。
@@ -298,6 +299,15 @@ Human 引擎决定（本地 merge）由后续 command 转成业务记录；需�
 
 所有合并都必须是 **merge commit**；squash/rebase 会改变审查 commit 的 SHA，工作流会明确报错，而不是悄悄放宽绑定。`mergePolicy` 在 store 初始化时固定：`comment`（默认，`@workflow merge`）、`auto`、`label`（`workflow:merge`）。
 
+### PR 上的自然语言命令
+
+`pr-watch` 发现协作者新的 `@workflow <自然语言>` 命令（不是 `merge`/`stop` 精确命令）时返回 `interpret`，由低思考 `pr-intent` agent 读取命令、当前 head、`mergePolicy` 和最近评论（Codex 评论只是证据），输出 merge / revise / stop / clarify：
+
+- `merge`：记录绑定当前 head 的合并意图，随后仍走 CI / unresolved thread / `mergePolicy` 检查，不会跳过门禁；一条授权的 `@workflow 可以了` 可以作为没有其他 verdict 时的通过决定。
+- `revise`：生成引用评论 id 的 `reworkBrief`，清除 approval 并回到同一分支/worktree/PR 的 `begin-engineering`；engineer 在 snapshot 中返回逐条 `rework`（resolved / partial / unresolved），新 head 发布后只通知一次"请检查"和逐条映射。
+- `stop` / `clarify`：保持当前状态，只回一条中文确认或澄清；同一评论 id 不会重复处理。
+- 非协作者或 workflow 自己的评论、窗口外的旧评论不会被当作命令；精确 `@workflow merge` / `stop` 和 verdict 标记仍然是确定性路径。
+
 ### 瞬态失败与退避
 
 GitHub 读取按**瞬态/永久**分类：连接重置、超时、5xx、429/rate limit 是瞬态。`pr-watch` 把瞬态失败写入 `item.pr.retry`（`failures`、`lastError`、`nextAttemptAt`、`exhausted`）并返回 `waiting`，由 `pr-gate` 继续轮询；退避期间不再请求 GitHub。连续 6 次失败后进入 `stage=blocked`、`next=attention`，停止自动调用，等待人工处理。永久错误（401、403 scope、404、422 validation、merge 冲突、branch protection、已合并/已关闭）仍会失败 packet 并保留原始消息。`pr-merge` 在丢失合并响应时，下一次先重读 PR：已合并则验证清理，绝不重复 merge。
@@ -387,10 +397,12 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | `record-proposal` | seed envelope、`proposal` 或 `null`、可选 `reason`；稳定 ID 需求，或把 seed 放回轮转并记录 `lastOutcome`/`lastReason`。 |
 | `route` | claimed item；ready 或 needs_approval。 |
 | `publish-requirement-issue` | 为 `requirement-pending` 需求创建/更新脱敏审批 issue；返回 envelope 与 `github` 元数据。 |
-| `check-requirement-issue` | 读取 issue 评论，返回 `approved` / `rejected` / `waiting`；决定按 revision 绑定并写入 `requirementApproval`。 |
+| `check-requirement-issue` | 读取 issue 评论：精确命令返回 `approved` / `rejected`；协作者自然语言命令返回 `interpret` + command/evidence；否则 `waiting`。决定按 revision 绑定。 |
+| `requirement-intent` / `requirement-intent-apply` | 低思考 agent 把自然语言命令判成 approve/revise/stop/clarify；apply 写入 `requirementApproval`、`revisionBrief`、cited ids，并同步标签/评论。 |
+| `notify-requirement-revision` | 新 revision 发布后发一次"请检查"评论（含引用的评论 id）；按 revision 去重。 |
 | `revise-proposal` | `proposal` 含 `expectedRevision`、title、summary、why、acceptance、evidence、risk；同 ID revision+1。 |
 | `prepare` / `begin-engineering` | 创建 `auto/req-*` 分支和 attached worktree；校验 envelope `revision` / 旧 `engineeringEpoch` 后进入新轮。 |
-| `snapshot` | 冻结 `expectedRevision`、`engineeringEpoch`；非空字符串 `summary`、`verification`；把分支压成单 commit，写不可变 artifact/commit。 |
+| `snapshot` | 冻结 `expectedRevision`、`engineeringEpoch`；非空字符串 `summary`、`verification`；可选逐条 `rework` 映射（resolved/partial/unresolved）；把分支压成单 commit，写不可变 artifact/commit。 |
 | `reconcile-snapshot` | `decision:finalize`、冻结 revision/epoch、operator note；仅完成已检查意图。 |
 | `publish-pr` | 推送需求分支并创建/更新自己的 draft PR；local fallback 返回 `skipped`。 |
 | `review-input` | 当前 `artifactRef` / `commit`；生成冻结 review 输入，也是对账后的续接入口。 |
@@ -399,7 +411,9 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | `merge-decision` | 仅 local fallback：当前 artifact、decision，返修/拒绝需反馈；精确产物批准。 |
 | `integration-route` | 读取 store 配置，返回 `pr` 或 `local`。 |
 | `ready-pr` | review pass + brief 后标记自己的 PR ready，记录反馈窗口。 |
-| `pr-watch` | 读取同一 PR 的授权评论/review、unresolved thread、CI、合并意图；返回 `pass` / `revise` / `waiting` / `merged` / `closed`。 |
+| `pr-watch` | 读取同一 PR 的授权评论/review、unresolved thread、CI、合并意图；协作者自然语言命令返回 `interpret` + command/evidence；其余返回 `pass` / `revise` / `waiting` / `merged` / `closed`。 |
+| `pr-intent` / `pr-intent-apply` | 低思考 agent 把自然语言命令判成 merge/revise/stop/clarify；apply 记录 merge intent 或 `reworkBrief`，按评论 id 去重。 |
+| `notify-pr-rework` | 新 head 发布后发一次"请检查"评论，包含逐条 resolved/unresolved；按 head 去重。 |
 | `pr-merge` | 重新校验 head/判决/CI/thread/策略后以 merge commit 合并；竞争或外部合并会被重新分类。 |
 | `pr-request-changes` | 把 GitHub 阻塞反馈按评论/review id 去重写回同一需求，回到 `engineering-ready`。 |
 | `integrate` | 仅 local fallback：本地 merged / 冲突自动 abort 后 revise。 |

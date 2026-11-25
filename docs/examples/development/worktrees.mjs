@@ -81,7 +81,8 @@ export async function prepare(store, id, claimId) {
     item.status = 'engineering-ready'; return item;
   });
 }
-export async function snapshot(store, id, claimId, { verification, summary, expectedRevision, engineeringEpoch }) {
+export async function snapshot(store, id, claimId, { verification, summary, expectedRevision, engineeringEpoch, rework }) {
+  const reworkMapping = reworkItems(rework);
   return store.mutate(id, claimId, async item => {
     if (item.pendingSnapshot) throw new Error('Snapshot is uncertain; inspect then explicitly reconcile-snapshot, never replay it');
     if (item.status !== 'engineering' || expectedRevision !== item.revision || engineeringEpoch !== item.engineeringEpoch) throw new Error('Stale/unrequested engineering snapshot');
@@ -102,17 +103,28 @@ export async function snapshot(store, id, claimId, { verification, summary, expe
     const folder = path.join(store.root, 'artifacts', item.id);
     await store.checkedFile(folder); await mkdir(folder, { recursive: true });
     const artifactRef = path.join(folder, `r${String(artifactRevision).padStart(6, '0')}.json`);
-    const artifact = { requirementId: id, requirementRevision: item.revision, engineeringEpoch, artifactRevision, commit, tree: await git(cwd, 'rev-parse', 'HEAD^{tree}'), baseRevision: item.baseRevision, summary, verification, createdAt: new Date().toISOString() };
+    const artifact = { requirementId: id, requirementRevision: item.revision, engineeringEpoch, artifactRevision, commit, tree: await git(cwd, 'rev-parse', 'HEAD^{tree}'), baseRevision: item.baseRevision, summary, verification, rework: reworkMapping, createdAt: new Date().toISOString() };
     item.pendingSnapshot = { artifactRef, artifact }; item.status = 'snapshot-pending';
     await store.save(item); // Reserve the immutable revision BEFORE publishing the artifact.
     await atomicJSON(await store.checkedFile(artifactRef), artifact, { immutable: true });
     return finishSnapshot(item);
   });
 }
+function reworkItems(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 12) throw new Error('Invalid rework mapping');
+  return value.map(entry => {
+    const commentId = Number(entry?.commentId);
+    if (!Number.isSafeInteger(commentId) || commentId <= 0) throw new Error('Invalid rework comment id');
+    const status = String(entry?.status ?? '').toLowerCase();
+    if (!['resolved', 'partial', 'unresolved'].includes(status)) throw new Error('Invalid rework status');
+    return { commentId, status, note: entry?.note ? String(entry.note).slice(0, 500) : '' };
+  });
+}
 function finishSnapshot(item) {
   const { artifactRef, artifact } = item.pendingSnapshot;
   const { artifactRevision, commit, requirementRevision, engineeringEpoch } = artifact;
-  item.implementation = { artifactRef, artifactRevision, commit, requirementRevision, engineeringEpoch };
+  item.implementation = { artifactRef, artifactRevision, commit, requirementRevision, engineeringEpoch, rework: artifact.rework ?? [] };
   item.pendingSnapshot = null; item.status = 'reviewing'; item.approval = null;
   return { item, artifactRef, artifactRevision, commit };
 }

@@ -68,6 +68,8 @@ PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论�
 
 `pr-watch` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；`pr-merge` 在真正合并前重新读取 PR，处理评论变化、外部抢先合并和 PR 关闭。所有合并都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。GitHub 瞬态失败（连接/超时/5xx/rate limit）会写入 `retry` 退避状态并返回 `waiting`，连续 6 次后进入 `attention`；永久错误仍然失败 packet。
 
+需求 issue 和 PR 还支持**协作者自然语言 `@workflow` 命令**：低思考 intent agent 只把授权命令当指令，最近评论（含 Codex）只作证据，输出 approve/revise/stop/clarify 或 merge/revise/stop/clarify；修订/返修 brief 引用评论 id，新 revision/head 只通知一次"请检查"。精确命令与 verdict 仍是确定性 fallback。
+
 `integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。
 
 默认 **`after-verified-merge`**：验证外部合并后删除 worktree（含 ignored/untracked 临时文件），再删除本地 `auto/req-*` 分支。删除前复核批准 commit、祖先关系和 worktree HEAD；拒绝、关闭、冲突、未合并状态不清理。业务 JSON、不可变 artifact/review、PR 引用以及 `cleanedWorktreePath`/`cleanedBranch` 记录保留。

@@ -157,7 +157,7 @@ test('audit coverage: complete production graph uses real command executor + mod
       await runSteps(6);
       await delay(20);
     }
-    throw new Error(`condition not reached: ${JSON.stringify(fx.state.tokens.filter(token => token.status !== 'completed').map(token => `${token.nodeId}:${token.status}`))}`);
+    throw new Error(`condition not reached: ${JSON.stringify({ status: fx.state.status, pause: fx.state.pauseReason, counts: fx.state.counts, tokens: fx.state.tokens.filter(token => token.status !== 'completed').map(token => `${token.nodeId}:${token.status}:${token.error?.code ?? ''}`), item: await requirementNow(), recent: fx.state.recent.slice(-14).map(entry => `${entry.nodeId ?? entry.id}:${entry.status ?? ''}:${entry.outcome ?? ''}`) })}`);
   };
   const requirementDecision = async (action, note) => {
     const current = await fx.store.get('req-audit');

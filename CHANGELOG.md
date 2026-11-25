@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 需求 issue 与 PR 支持协作者自然语言 `@workflow` 命令：低思考 intent agent 只把授权命令当指令，最近评论（Codex 等）只作证据，输出 approve/revise/stop/clarify 或 merge/revise/stop/clarify；修订/返修生成引用评论 id 的 brief，新 revision/head 只通知一次“请检查”并附逐条 resolved/unresolved 映射；模糊或意图失败回澄清，精确命令仍是 fallback。agent 节点新增可选 `fallbackOutcome`，让意图模型失败走业务澄清而不是失败 packet。（#35）
+
 - 看板节点图新增**极简**视图：只保留 agent 与关键 gate 节点，隐藏节点路径压缩为直接边，busy 重试门和 human/command 节点不显示；按钮按 完整 → 简化 → 极简 循环。
 - PR watcher/merge 对 GitHub 瞬态失败重试：连接/超时/5xx/429 写入 `pr.retry` 有界退避并返回 `waiting`，连续 6 次后进入 `attention`；永久错误（auth/scope/404/validation/merge 状态）仍然失败 packet；丢失的 merge 响应在下次轮询先重读，绝不重复 merge。（#34）
 

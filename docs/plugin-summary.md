@@ -34,7 +34,7 @@
 
 | type | 核心 config / 行为 |
 | --- | --- |
-| `agent` | `prompt`、`cwd`、`lane`、`provider` / `model` 或 `models`、`reasoningEffort`、`outcomes`、`timeoutMs`、`maxFailures`。调用模型子任务。 |
+| `agent` | `prompt`、`cwd`、`lane`、`provider` / `model` 或 `models`、`reasoningEffort`、`outcomes`、`fallbackOutcome`、`timeoutMs`、`maxFailures`。调用模型子任务。 |
 | `command` | `command`、可选 `cwd` / `timeoutMs` / `json`；需要命令权限。 |
 | `http` | `url`、可选 `method` / `headers` / `body` / `timeoutMs`；需要 HTTP 权限。 |
 | `human` | 可选 `title` / `outcomes`，默认 `approve` / `reject`；等待某个 token 的决定。 |
@@ -77,6 +77,8 @@
 只有 provider/model 调用失败（例如网络错误、模型不可用、激活失败）才尝试下一候选。有效的 `fail`、`revise`、`needs_revision`、`reject` 按业务边处理，不换模型；取消、无效模型输出和失败预算耗尽也不触发回退。模型必须给出明确 outcome，不能将无效回复当作批准。
 
 agent 节点会请求宿主的结构化输出契约：当 provider 声明 `outputSchema` 能力（内置 `spawn` 支持）时，子 agent 通过作用域内的 `structured_output` 工具提交 `{outcome, output}`，宿主按 schema 校验后以 `SubagentResult.structured` 返回；未提交或 provider 不支持时回退到文本 JSON 协议。无效结果会带上有界的最终文本节选，便于定位。
+
+可选的 `config.fallbackOutcome` 必须是节点已声明的 outcome：模型候选/格式失败时返回该业务 outcome（output 带 `error`/`fallback`），而不是失败 packet；取消、超时、活动落盘失败和激活释放失败仍然终止。它用于"判定失败也要走澄清边"这类流程，不能吞掉中断证据。
 
 模型/开发任务**默认没有截止时间**。显式正值 `config.timeoutMs` / 插件 `agentTimeoutMs` 是 opt-in，`0` 禁用。command/HTTP 保留操作超时，避免挂起请求无限占用资源。
 

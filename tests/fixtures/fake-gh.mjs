@@ -208,6 +208,12 @@ if (command === 'list') {
     after.mergeThenFailView = false;
     write(after);
   }
+} else if (command === 'comment') {
+  const pr = find(state, args[2]);
+  if (!pr) fail('no fake PR');
+  pr.comments = pr.comments ?? [];
+  pr.comments.push({ id: state.nextComment++, body: bodyOf(), user: { login: 'fake-workflow' }, author_association: 'OWNER', created_at: new Date().toISOString() });
+  write(state);
 } else if (command === 'reopen') {
   const pr = find(state, args[2]);
   if (!pr) fail('no fake PR');

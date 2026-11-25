@@ -47,12 +47,12 @@ async function prepared(store, id = 'req-one', spec = user(id)) {
   const item = await store.beginEngineering(id, envelope.claimId, { expectedRevision: ready.revision, expectedEpoch: ready.engineeringEpoch });
   return { id, claimId: envelope.claimId, cwd: item.worktreePath, revision: item.revision, engineeringEpoch: item.engineeringEpoch };
 }
-async function implement(store, item, { file = `${item.id}.txt`, contents = 'implemented\n' } = {}) {
+async function implement(store, item, { file = `${item.id}.txt`, contents = 'implemented\n', rework } = {}) {
   let current = await store.get(item.id);
   if (current.status === 'engineering-ready') current = await store.beginEngineering(item.id, item.claimId, { expectedRevision: current.revision, expectedEpoch: current.engineeringEpoch });
   await writeFile(path.join(item.cwd, file), contents);
   await git(item.cwd, 'add', '--all'); await git(item.cwd, 'commit', '-m', `temporary implementation ${item.id}`);
-  return snapshot(store, item.id, item.claimId, { expectedRevision: current.revision, engineeringEpoch: current.engineeringEpoch, summary: `Implemented ${item.id}`, verification: 'git status --porcelain: clean; isolated fixture assertion' });
+  return snapshot(store, item.id, item.claimId, { expectedRevision: current.revision, engineeringEpoch: current.engineeringEpoch, summary: `Implemented ${item.id}`, verification: 'git status --porcelain: clean; isolated fixture assertion', rework });
 }
 async function pass(store, item, artifact) {
   return recordReview(store, item.id, item.claimId, { artifactRef: artifact.artifactRef, commit: artifact.commit, decision: 'pass', summary: 'Pinned commit reviewed', verification: 'Read pinned diff and fixture assertions', reviewer: 'test-reviewer' });
@@ -166,6 +166,20 @@ test('development graph is generic: continuous detached producer, root 6, one th
   assert.ok(graph.edges.some(edge => edge.from === 'pr-watch' && edge.to === 'pr-gate' && edge.on === 'waiting'));
   assert.ok(graph.edges.some(edge => edge.from === 'pr-watch' && edge.to === 'pr-merge' && edge.on === 'pass'));
   assert.ok(graph.edges.some(edge => edge.from === 'pr-merge' && edge.to === 'cleanup' && edge.on === 'merged'));
+  assert.equal(graph.nodes.find(node => node.id === 'requirement-intent').config.reasoningEffort, 'low');
+  assert.equal(graph.nodes.find(node => node.id === 'requirement-intent').config.fallbackOutcome, 'clarify');
+  assert.equal(graph.nodes.find(node => node.id === 'pr-intent').config.reasoningEffort, 'low');
+  assert.equal(graph.nodes.find(node => node.id === 'pr-intent').config.fallbackOutcome, 'clarify');
+  assert.ok(graph.edges.some(edge => edge.from === 'check-requirement-issue' && edge.to === 'requirement-intent' && edge.on === 'interpret'));
+  for (const outcome of ['approve', 'revise', 'stop', 'clarify']) assert.ok(graph.edges.some(edge => edge.from === 'requirement-intent' && edge.to === 'requirement-intent-apply' && edge.on === outcome));
+  assert.ok(graph.edges.some(edge => edge.from === 'publish-requirement-issue' && edge.to === 'notify-requirement-revision' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'notify-requirement-revision' && edge.to === 'check-requirement-issue' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'pr-watch' && edge.to === 'pr-intent' && edge.on === 'interpret'));
+  for (const outcome of ['merge', 'revise', 'stop', 'clarify']) assert.ok(graph.edges.some(edge => edge.from === 'pr-intent' && edge.to === 'pr-intent-apply' && edge.on === outcome));
+  assert.ok(graph.edges.some(edge => edge.from === 'pr-intent-apply' && edge.to === 'pr-merge' && edge.on === 'merge'));
+  assert.ok(graph.edges.some(edge => edge.from === 'pr-intent-apply' && edge.to === 'begin-engineering' && edge.on === 'revise'));
+  assert.ok(graph.edges.some(edge => edge.from === 'publish-pr' && edge.to === 'notify-pr-rework' && edge.on === 'complete'));
+  assert.ok(graph.edges.some(edge => edge.from === 'notify-pr-rework' && edge.to === 'review-input' && edge.on === 'complete'));
   assert.ok(graph.nodes.find(node => node.id === 'seed-fanout').config.detached);
   assert.ok(graph.nodes.find(node => node.id === 'producer-work').config.detached);
   assert.ok(graph.edges.some(edge => edge.from === 'producer-work' && edge.to === 'mine-gate'));
@@ -940,7 +954,10 @@ test('requirement review publishes one redacted issue and applies an authorized 
   await issueComment(state, number, '@workflow approve', 'NONE');
   assert.equal((await cli('check-requirement-issue', envelope)).outcome, 'waiting');
   await issueComment(state, number, '@workflow maybe');
-  assert.equal((await cli('check-requirement-issue', envelope)).outcome, 'waiting');
+  const ambiguous = await cli('check-requirement-issue', envelope);
+  assert.equal(ambiguous.outcome, 'interpret');
+  assert.equal(ambiguous.output.command.body.trim(), '@workflow maybe');
+  assert.ok(Array.isArray(ambiguous.output.evidence));
   assert.equal((await base.store.get(item.id)).status, 'requirement-pending');
   // An authorized approval applies to the stamped revision.
   await issueComment(state, number, '@workflow approve');
@@ -1189,4 +1206,189 @@ test('explicit cleanup policy may remove only an already verified merged worktre
   await approve(store, item, artifact); await integrate(store, item.id, item.claimId);
   assert.equal((await cleanup(store, item.id, item.claimId)).outcome, 'cleaned');
   assert.ok((await readdir(path.join(store.root, 'requirements'))).includes('req-one.json'));
+});
+
+
+test('natural-language issue command revises with a cited brief and notifies once', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { envelope, item } = await pendingReview(base.store);
+  await cli('publish-requirement-issue', envelope);
+  const number = (await base.store.get(item.id)).github.number;
+  await issueComment(state, number, '[role=codex] P2: tighten the error path', 'NONE');
+  await issueComment(state, number, '@workflow 按 Codex 的两条 P2 修一下');
+  const checked = await cli('check-requirement-issue', envelope);
+  assert.equal(checked.outcome, 'interpret');
+  assert.equal(checked.output.command.author, 'maintainer');
+  const codex = checked.output.evidence.find(entry => entry.role === 'codex');
+  assert.ok(codex, 'Codex comment is visible as evidence');
+  const payload = {
+    dataRef: envelope.dataRef, claimId: envelope.claimId, action: 'revise',
+    revision: checked.output.revision, commentId: checked.output.command.commentId,
+    summary: '按 Codex 的 P2 收紧错误处理',
+    cited: [{ commentId: codex.commentId, snippet: 'P2: tighten the error path', request: '收紧错误路径' }],
+    actor: checked.output.command.author,
+  };
+  const applied = await cli('requirement-intent-apply', payload);
+  assert.equal(applied.outcome, 'revision');
+  const revised = await base.store.get(item.id);
+  assert.equal(revised.status, 'requirement-revision');
+  assert.equal(revised.revisionBrief.revision, 2);
+  assert.equal(revised.revisionBrief.items[0].commentId, codex.commentId);
+  assert.equal(revised.intent.actor, 'maintainer');
+  // The same command applied twice is a no-op.
+  assert.equal((await cli('requirement-intent-apply', payload)).outcome, 'revision');
+  // Complete the revision through the same store path the graph uses.
+  await cli('revise-proposal', { ...envelope, proposal: { expectedRevision: 1, title: 'Review me v2', summary: 'Tighter error handling', why: [], acceptance: ['test the error path'], evidence: 'Narrower and testable', risk: 'mid' } });
+  assert.equal((await cli('route', envelope)).outcome, 'needs_approval');
+  await cli('publish-requirement-issue', envelope);
+  assert.equal((await cli('notify-requirement-revision', envelope)).outcome, 'complete');
+  let fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.ok(fake.issues[0].comments.some(comment => comment.body.includes('请检查')));
+  const count = fake.issues[0].comments.length;
+  await cli('notify-requirement-revision', envelope);
+  fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues[0].comments.length, count, 'one notification per revision');
+});
+
+test('natural-language requirement approval applies through the issue', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { envelope, item } = await pendingReview(base.store);
+  await cli('publish-requirement-issue', envelope);
+  const number = (await base.store.get(item.id)).github.number;
+  await issueComment(state, number, '@workflow 可以了');
+  const checked = await cli('check-requirement-issue', envelope);
+  assert.equal(checked.outcome, 'interpret');
+  const applied = await cli('requirement-intent-apply', {
+    dataRef: envelope.dataRef, claimId: envelope.claimId, action: 'approve',
+    revision: checked.output.revision, commentId: checked.output.command.commentId,
+    summary: '可以了', cited: [], actor: checked.output.command.author,
+  });
+  assert.equal(applied.outcome, 'approved');
+  assert.equal((await base.store.get(item.id)).status, 'ready');
+  const fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues[0].state, 'CLOSED');
+  assert.ok(fake.issues[0].labels.includes('workflow:requirement-approved'));
+});
+
+test('ambiguous or failed intent posts one clarification comment', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { envelope, item } = await pendingReview(base.store);
+  await cli('publish-requirement-issue', envelope);
+  const number = (await base.store.get(item.id)).github.number;
+  await issueComment(state, number, '@workflow 再想想');
+  const checked = await cli('check-requirement-issue', envelope);
+  assert.equal(checked.outcome, 'interpret');
+  const payload = {
+    dataRef: envelope.dataRef, claimId: envelope.claimId, action: 'clarify',
+    revision: checked.output.revision, commentId: checked.output.command.commentId,
+    error: 'model unavailable', cited: [], actor: checked.output.command.author,
+  };
+  assert.equal((await cli('requirement-intent-apply', payload)).outcome, 'waiting');
+  assert.equal((await base.store.get(item.id)).status, 'requirement-pending');
+  let fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.ok(fake.issues[0].comments.some(comment => comment.body.includes('自动判定暂时不可用')));
+  const count = fake.issues[0].comments.length;
+  await cli('requirement-intent-apply', payload);
+  fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues[0].comments.length, count, 'clarification is posted once');
+});
+
+test('unauthorized instructions never become workflow commands', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { envelope, item } = await pendingReview(base.store);
+  await cli('publish-requirement-issue', envelope);
+  const number = (await base.store.get(item.id)).github.number;
+  await issueComment(state, number, '@workflow approve', 'NONE');
+  assert.equal((await cli('check-requirement-issue', envelope)).outcome, 'waiting');
+  assert.equal((await base.store.get(item.id)).status, 'requirement-pending');
+  await issueComment(state, number, '@workflow 按 Codex 意见改');
+  assert.equal((await cli('check-requirement-issue', envelope)).outcome, 'interpret');
+});
+
+test('natural-language PR merge command permits the configured merge path', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '@workflow 可以了' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'interpret');
+  assert.equal(watched.output.command.body.trim(), '@workflow 可以了');
+  const applied = await cli('pr-intent-apply', {
+    dataRef: store.ref(item.id), claimId: item.claimId, action: 'merge',
+    commentId: watched.output.command.commentId, head: watched.output.head,
+    summary: '可以了', cited: [], actor: watched.output.command.author,
+  });
+  assert.equal(applied.outcome, 'merge');
+  assert.ok((await store.get(item.id)).pr.mergeIntent);
+  assert.equal((await merge(store, item.id, item.claimId)).outcome, 'merged');
+  assert.equal((await store.get(item.id)).status, 'merged');
+});
+
+test('natural-language PR revise creates a rework brief and posts one mapping notification', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '[role=codex] P2: add the retry path', login: 'codex-bot', association: 'NONE' });
+  await addPrComment(prState, { body: '@workflow 按这两条 review 修' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'interpret');
+  const codex = watched.output.evidence.find(entry => entry.role === 'codex');
+  assert.ok(codex, 'Codex review comment is evidence');
+  const applied = await cli('pr-intent-apply', {
+    dataRef: store.ref(item.id), claimId: item.claimId, action: 'revise',
+    commentId: watched.output.command.commentId, head: watched.output.head,
+    summary: '按 review 修',
+    cited: [{ commentId: codex.commentId, snippet: 'P2: add the retry path', request: '加入 retry' }],
+    actor: watched.output.command.author,
+  });
+  assert.equal(applied.outcome, 'revise');
+  const reworked = await store.get(item.id);
+  assert.equal(reworked.status, 'engineering-ready');
+  assert.equal(reworked.pr.reworkBrief.items[0].commentId, codex.commentId);
+  const artifact = await implement(store, { ...reworked, cwd: reworked.worktreePath }, { contents: 'reworked\n', rework: [{ commentId: codex.commentId, status: 'resolved', note: 'retry path added' }] });
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  assert.equal((await cli('notify-pr-rework', { dataRef: store.ref(item.id), claimId: item.claimId })).outcome, 'complete');
+  let fake = JSON.parse(await readFile(prState, 'utf8'));
+  const notification = fake.prs[0].comments.find(comment => comment.body.includes('请检查'));
+  assert.ok(notification, 'PR rework notification posted');
+  assert.match(notification.body, /#\d+ · resolved/);
+  assert.match(notification.body, new RegExp(artifact.commit.slice(0, 12)));
+  const count = fake.prs[0].comments.length;
+  await cli('notify-pr-rework', { dataRef: store.ref(item.id), claimId: item.claimId });
+  fake = JSON.parse(await readFile(prState, 'utf8'));
+  assert.equal(fake.prs[0].comments.length, count, 'one notification per head');
+});
+
+test('PR stop command keeps state and does not repeat its acknowledgement', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '@workflow 先别动' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'interpret');
+  const payload = {
+    dataRef: store.ref(item.id), claimId: item.claimId, action: 'stop',
+    commentId: watched.output.command.commentId, head: watched.output.head,
+    summary: '先别动', cited: [], actor: watched.output.command.author,
+  };
+  assert.equal((await cli('pr-intent-apply', payload)).outcome, 'waiting');
+  assert.equal((await store.get(item.id)).status, 'human-pending');
+  let fake = JSON.parse(await readFile(prState, 'utf8'));
+  assert.ok(fake.prs[0].comments.some(comment => comment.body.includes('停止指令')));
+  const count = fake.prs[0].comments.length;
+  assert.equal((await cli('pr-intent-apply', payload)).outcome, 'waiting');
+  fake = JSON.parse(await readFile(prState, 'utf8'));
+  assert.equal(fake.prs[0].comments.length, count, 'stop acknowledgement is posted once');
+});
+
+
+test('unauthorized or stale PR instructions never trigger the intent step', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '@workflow 可以了', login: 'outsider', association: 'NONE' });
+  await addPrComment(prState, { body: '@workflow 可以了', created: '2020-01-01T00:00:00.000Z' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'waiting');
+  assert.equal((await store.get(item.id)).pr.intent ?? null, null);
+  assert.equal((await store.get(item.id)).status, 'human-pending');
 });

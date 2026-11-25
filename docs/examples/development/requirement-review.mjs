@@ -13,6 +13,20 @@ export const REQUIREMENT_LABELS = [REVIEW_LABEL, APPROVED_LABEL, REJECTED_LABEL]
 
 const AUTHORIZED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 const DECISION = /^\s*@workflow\s+(approve|reject)\b([\s\S]*)$/i;
+const INTENT_COMMAND = /^\s*@workflow\s+(?!approve\b|reject\b)([\s\S]+)$/i;
+function commentTime(comment) { return Date.parse(comment?.created_at ?? comment?.createdAt ?? '') || 0; }
+function evidenceFor(comments, floor) {
+  return comments
+    .filter(comment => Number(comment.id) > floor)
+    .slice(-15)
+    .map(comment => ({
+      commentId: Number(comment.id),
+      author: comment.user?.login ?? comment.author?.login ?? 'unknown',
+      association: comment.author_association ?? '',
+      role: /\[role=codex\]/i.test(String(comment.body ?? '')) ? 'codex' : null,
+      body: String(comment.body ?? '').slice(0, 1200),
+    }));
+}
 
 /** Deterministic public redaction: paths, emails, tokens, private addresses. */
 export function redactForPublic(value) {
@@ -152,7 +166,26 @@ export async function check(store, id, claimId) {
     .map(comment => ({ comment, match: DECISION.exec(String(comment.body ?? '')) }))
     .filter(entry => entry.match)
     .sort((a, b) => Number(a.comment.id) - Number(b.comment.id));
-  if (decisions.length === 0) return { item, outcome: 'waiting', reason: 'no-decision' };
+  if (decisions.length === 0) {
+    // No exact command: hand one authorized natural-language command to the
+    // intent step. Only the command is an instruction; evidence stays data.
+    const commands = comments
+      .filter(comment => Number(comment.id) > Number(item.github.commentFloor ?? 0))
+      .filter(comment => AUTHORIZED.has(String(comment.author_association ?? '').toUpperCase()))
+      .filter(comment => INTENT_COMMAND.test(String(comment.body ?? '')))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    const entry = commands.at(-1);
+    if (entry) {
+      return {
+        item,
+        outcome: 'interpret',
+        revision: item.revision,
+        command: { commentId: Number(entry.id), body: String(entry.body ?? '').trim().slice(0, 2000), author: entry.user?.login ?? 'unknown' },
+        evidence: evidenceFor(comments, Number(item.github.commentFloor ?? 0)),
+      };
+    }
+    return { item, outcome: 'waiting', reason: 'no-decision' };
+  }
   const { comment, match } = decisions.at(-1);
   const action = match[1].toLowerCase();
   const note = match[2].trim();
@@ -182,4 +215,65 @@ export async function check(store, id, claimId) {
     : `已拒绝 revision ${item.revision}（${login}）：${note}`);
   if (action === 'approve') await gh(cwd, 'issue', 'close', String(number));
   return { item: saved, outcome: action === 'approve' ? 'approved' : 'rejected' };
+}
+
+async function syncIssueDecision(store, item, action) {
+  const cwd = store.config.repoRoot, number = item.github.number;
+  const current = await ghJson(cwd, ['issue', 'view', String(number), '--json', 'labels']);
+  const labels = new Set((current.labels ?? []).map(label => label.name));
+  const args = ['issue', 'edit', String(number)];
+  if (labels.has(REVIEW_LABEL)) args.push('--remove-label', REVIEW_LABEL);
+  if (action === 'approve') args.push('--add-label', APPROVED_LABEL);
+  else if (labels.has(APPROVED_LABEL)) args.push('--remove-label', APPROVED_LABEL);
+  if (action === 'revise') args.push('--add-label', REJECTED_LABEL);
+  await gh(cwd, ...args);
+  if (action === 'approve') {
+    await gh(cwd, 'issue', 'comment', String(number), '--body', `已批准 revision ${item.revision}，工作流继续实现。`);
+    await gh(cwd, 'issue', 'close', String(number));
+  } else if (action === 'revise') {
+    await gh(cwd, 'issue', 'comment', String(number), '--body', `已按命令进入 revision ${item.revision + 1} 修订，完成后会回复请检查。`);
+  }
+}
+
+/** Apply one interpreted natural-language command to the current requirement. */
+export async function applyIntent(store, id, claimId, { action, commentId, revision, summary, cited, error, actor } = {}) {
+  const current = await store.get(id);
+  if (current.intent?.commentId === Number(commentId)) {
+    const stored = current.intent.action;
+    return { item: current, outcome: stored === 'approve' ? 'approved' : stored === 'revise' ? 'revision' : 'waiting', duplicate: true };
+  }
+  const item = await store.applyRequirementIntent(id, claimId, { action, commentId, revision, summary, cited, error, actor });
+  if (!item.github?.number) throw new Error('Requirement has no review issue');
+  if (action === 'approve' || action === 'revise') {
+    await syncIssueDecision(store, item, action);
+  } else if (action === 'stop' || action === 'clarify') {
+    const body = error
+      ? '自动判定暂时不可用，请使用明确命令或稍后重试。'
+      : action === 'stop'
+        ? '已收到停止指令，保持当前审批状态。'
+        : '无法根据这条评论自动判定。请使用明确命令（`@workflow approve` / `@workflow reject <理由>`），或直接说明要修改的具体点。';
+    await gh(store.config.repoRoot, 'issue', 'comment', String(item.github.number), '--body', body);
+  }
+  const outcome = action === 'approve' ? 'approved' : action === 'revise' ? 'revision' : 'waiting';
+  return { item: await store.get(id), outcome };
+}
+
+/** One Chinese "please check" comment per new revision, after the issue body updates. */
+export async function notifyRevision(store, id, claimId) {
+  return store.mutate(id, claimId, async item => {
+    const brief = item.revisionBrief;
+    if (!brief || brief.revision !== item.revision || item.notifiedRevision === item.revision) return { item, outcome: 'complete', notified: false };
+    if (!item.github?.number) throw new Error('Requirement has no review issue');
+    const items = brief.items ?? [];
+    const body = [
+      `已生成 revision ${item.revision}，请检查。`,
+      '',
+      ...(brief.summary ? [brief.summary, ''] : []),
+      ...(items.length ? ['引用反馈：', ...items.map(entry => `- #${entry.commentId}${entry.snippet ? ` · ${entry.snippet}` : ''}${entry.request ? `：${entry.request}` : ''}`), ''] : []),
+      '如仍需修改，请评论 `@workflow <具体意见>`；确认后评论 `@workflow approve`。',
+    ].join('\n');
+    await gh(store.config.repoRoot, 'issue', 'comment', String(item.github.number), '--body', body);
+    item.notifiedRevision = item.revision;
+    return { item, outcome: 'complete' };
+  });
 }

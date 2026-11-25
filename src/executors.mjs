@@ -31,6 +31,9 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
       const outcomes = Array.isArray(node.config.outcomes) && node.config.outcomes.length > 0
         ? node.config.outcomes
         : node.config.outcome ? [node.config.outcome] : ['complete'];
+      const fallbackOutcome = typeof node.config.fallbackOutcome === 'string' && outcomes.includes(node.config.fallbackOutcome)
+        ? node.config.fallbackOutcome
+        : null;
       const prompt = agentPrompt({ definition, node, input, context, outcomes });
       const candidates = modelCandidates(node, lane);
       const providerName = settings.subagentProvider ?? 'spawn';
@@ -42,7 +45,8 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
       const scope = executionScope(exec.signal, node.config.timeoutMs ?? settings.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS, `agent ${node.id}`);
       const failures = [];
       try {
-        for (const candidate of candidates) {
+        try {
+          for (const candidate of candidates) {
           let activation;
           let failure;
           try {
@@ -115,6 +119,16 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
           }
         }
         throw new Error(`all model candidates failed: ${failures.join('; ')}`);
+        } catch (error) {
+          const failure = cancellationError(error, scope.signal);
+          // An opt-in business fallback lets a node such as an intent classifier
+          // ask for clarification when the model is unavailable or malformed,
+          // while cancellation and persistence failures stay terminal.
+          if (fallbackOutcome && !['execution_aborted', 'execution_timeout', 'activity_persistence_failed', 'activation_disposal_failed'].includes(failure.code)) {
+            return { outcome: fallbackOutcome, output: { error: String(failure.message ?? failure).slice(0, 1000), fallback: true }, model: null };
+          }
+          throw failure;
+        }
       } finally {
         scope.dispose();
       }

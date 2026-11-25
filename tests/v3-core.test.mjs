@@ -32,6 +32,7 @@ test('definition is generic, explicit, bounded, and forwards per-candidate reaso
   assert.equal(definition.nodes[0].config.models[0].reasoningEffort, 'custom-effort');
   assert.equal(Object.hasOwn(definition.nodes[0], 'inputs'), false);
   assert.throws(() => graph([{ id: 'worker', type: 'agent' }], [], { concurrency: 33 }), /between 1 and 32/);
+  assert.throws(() => graph([{ id: 'intent', type: 'agent', config: { outcomes: ['approve'], fallbackOutcome: 'clarify' } }]), /fallbackOutcome/);
   const child = { apiVersion: 2, name: 'serial child', nodes: [{ id: 'child', type: 'agent' }], edges: [] };
   const nested = graph([{ id: 'nested', type: 'subworkflow', config: { definition: child } }]);
   assert.equal(nested.nodes[0].config.definition.concurrency, 1);
