@@ -66,7 +66,7 @@ Publish/ready/watch/merge 串行使用 store 级 integration lock。PR 发布前
 
 PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论不承担状态。workflow 只在 head 匹配、CI 全绿或 `none`、review thread 全 resolve、合并意图满足时设置 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签；head 变化、CI 失败、thread 未关闭或出现 `revise` 时撤销标签并回到返修。完整的判决标记、finding 和合并门规则见 [PR 交流规范](<examples/development/pr-protocol.md>)。
 
-`pr-watch` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；`pr-merge` 在真正合并前重新读取 PR，处理评论变化、外部抢先合并和 PR 关闭。所有合并都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。
+`pr-watch` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；`pr-merge` 在真正合并前重新读取 PR，处理评论变化、外部抢先合并和 PR 关闭。所有合并都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。GitHub 瞬态失败（连接/超时/5xx/rate limit）会写入 `retry` 退避状态并返回 `waiting`，连续 6 次后进入 `attention`；永久错误仍然失败 packet。
 
 `integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。
 

@@ -17,6 +17,21 @@ const bodyOf = () => {
   return valueAfter('--body') ?? '';
 };
 const issueByNumber = (state, number) => state.issues.find(issue => issue.number === Number(number)) ?? null;
+/** Test-only failure injection: { match, remaining, stderr } in the state file. */
+function injectFailure() {
+  if (!statePath || !existsSync(statePath)) return;
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  const spec = state.fail;
+  if (!spec) return;
+  if (!args.join(' ').startsWith(spec.match ?? '')) return;
+  if ((spec.remaining ?? 1) <= 0) return;
+  spec.remaining = (spec.remaining ?? 1) - 1;
+  if (spec.remaining <= 0) delete state.fail;
+  writeFileSync(statePath, JSON.stringify(state));
+  process.stderr.write(spec.stderr ?? 'HTTP 503 Service Unavailable');
+  process.exit(1);
+}
+injectFailure();
 const find = (state, reference) => {
   if (/^\d+$/.test(String(reference))) return state.prs.find(pr => pr.number === Number(reference)) ?? null;
   const match = String(reference).match(/\/pull\/(\d+)/);
@@ -186,6 +201,13 @@ if (command === 'list') {
   const pr = find(state, args[2]);
   if (!pr) fail('no fake PR');
   if (pr.state !== 'MERGED') mergePr(pr);
+  // Simulate a lost merge response: the merge landed, but the next read fails.
+  const after = read();
+  if (after.mergeThenFailView) {
+    after.fail = { match: 'pr view', remaining: 1, stderr: 'HTTP 503 Service Unavailable' };
+    after.mergeThenFailView = false;
+    write(after);
+  }
 } else if (command === 'reopen') {
   const pr = find(state, args[2]);
   if (!pr) fail('no fake PR');

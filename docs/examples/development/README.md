@@ -298,6 +298,10 @@ Human 引擎决定（本地 merge）由后续 command 转成业务记录；需�
 
 所有合并都必须是 **merge commit**；squash/rebase 会改变审查 commit 的 SHA，工作流会明确报错，而不是悄悄放宽绑定。`mergePolicy` 在 store 初始化时固定：`comment`（默认，`@workflow merge`）、`auto`、`label`（`workflow:merge`）。
 
+### 瞬态失败与退避
+
+GitHub 读取按**瞬态/永久**分类：连接重置、超时、5xx、429/rate limit 是瞬态。`pr-watch` 把瞬态失败写入 `item.pr.retry`（`failures`、`lastError`、`nextAttemptAt`、`exhausted`）并返回 `waiting`，由 `pr-gate` 继续轮询；退避期间不再请求 GitHub。连续 6 次失败后进入 `stage=blocked`、`next=attention`，停止自动调用，等待人工处理。永久错误（401、403 scope、404、422 validation、merge 冲突、branch protection、已合并/已关闭）仍会失败 packet 并保留原始消息。`pr-merge` 在丢失合并响应时，下一次先重读 PR：已合并则验证清理，绝不重复 merge。
+
 ### 本地 fallback
 
 初始化时显式选择：

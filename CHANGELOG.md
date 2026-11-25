@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 看板节点图新增**极简**视图：只保留 agent 与关键 gate 节点，隐藏节点路径压缩为直接边，busy 重试门和 human/command 节点不显示；按钮按 完整 → 简化 → 极简 循环。
+- PR watcher/merge 对 GitHub 瞬态失败重试：连接/超时/5xx/429 写入 `pr.retry` 有界退避并返回 `waiting`，连续 6 次后进入 `attention`；永久错误（auth/scope/404/validation/merge 状态）仍然失败 packet；丢失的 merge 响应在下次轮询先重读，绝不重复 merge。（#34）
+
 - 需求 issue 与 PR body 改为 decision-first 模板：首屏是 What / Why / Acceptance / Decision 或 Change / Verification / Review verdict / Merge decision，完整证据折叠在 `<details>`；需求记录升到 store `v4`（summary/why/acceptance/evidence），旧 v3 通过 `driver migrate` 显式升级，保留审计字段。（#33）
 - PR 合并决定移到 GitHub：`pr-watch` 读取协作者 `[verdict=pass|revise]` 评论、正式 review、未 resolve thread、CI 和 `@workflow merge`（`mergePolicy` 默认 `comment`，也支持 `auto`/`label`）；`pr-merge` 重新校验后用 merge commit 合并，阻塞反馈经 `pr-request-changes` 回到同一分支；PR 路径移除 `self-merge-human`/`merge-human` 看板 token，local fallback 保留看板 Human。（#32）
 

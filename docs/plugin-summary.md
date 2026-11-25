@@ -143,7 +143,7 @@ runs/<runId>/history.json      有界历史元数据
 
 Checkpoint 保存引用，不重复嵌入 payload 或完整对话。Artifact 默认上限 256 KB；大数据应写入业务文件，只返回小 envelope。清理仅删除不可达运行时 artifact，不删除工作流业务文件。业务 `dataRef` 与引擎 artifact ID 是两种不同引用，插件不会自动读取前者。
 
-会话顶部 **工作流** 按钮通过原生 Browser 侧栏打开独立的 token 保护 loopback 看板，路径固定为 `/plugins/dsh-auto-workflow/board`。看板提供节点容量/队列、Human 待办、有序模型选择以及按需加载历史/产物。插件负责监听器，用户无需另开服务器。token 绑定一个 session；主站 API 在 Connection 认证缺失时拒绝访问。看板 URL 含私有访问凭据，不应公开。
+会话顶部 **工作流** 按钮通过原生 Browser 侧栏打开独立的 token 保护 loopback 看板，路径固定为 `/plugins/dsh-auto-workflow/board`。看板提供节点容量/队列、Human 待办、有序模型选择以及按需加载历史/产物；节点图支持完整、简化（隐藏 `busy-*`）和极简（只保留 agent 与关键 gate，路径压缩）三种视图。插件负责监听器，用户无需另开服务器。token 绑定一个 session；主站 API 在 Connection 认证缺失时拒绝访问。看板 URL 含私有访问凭据，不应公开。
 
 **持久化不保证自动恢复副作用。** Host 停止或插件重载后，失去执行所有者的 `running` 工作保留为 interrupted 证据；失败/中断执行不自动重放。Stop 会中止并收束执行，但不回滚已经发生的 Git/HTTP 操作。单 Host 协调、原子文件替换与引用落盘，不等于分布式锁、多文件事务、exactly-once 或掉电耐久性承诺。
 

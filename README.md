@@ -113,7 +113,7 @@ The runtime enforces the grant; the graph cannot widen it silently. A command al
 ## Board
 
 - **Human details:** inspect a waiting token's input JSON and record its outcome in one place.
-- **Graph modes:** “Simplified” hides `busy-*` retry gates; “Full” shows every edge.
+- **Graph modes:** “Simplified” hides `busy-*` retry gates; “Minimal” keeps only agent and key gate nodes, compressing hidden paths; “Full” shows every edge.
 - **Node tiles:** idle, running, waiting, error and closed states are visually distinct; click a tile for packets and history.
 
 ## Design boundaries

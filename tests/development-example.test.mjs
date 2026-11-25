@@ -106,6 +106,23 @@ async function addPrComment(statePath, { body, login = 'maintainer', association
     pr.comments.push({ id: state.nextComment++, body, user: { login }, author_association: association, created_at: created });
   });
 }
+async function readyPr(t, options = {}) {
+  const base = await fixture(t, { integrationMode: 'pull-request', ...options });
+  const { state: prState } = await withPullRequestFixture(t, base, { readyMerges: false });
+  const { store } = base;
+  const item = await prepared(store, 'req-retry');
+  const artifact = await implement(store, item);
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  return { base, store, item, prState };
+}
+async function advanceRetry(store, item) {
+  await store.mutate(item.id, item.claimId, current => {
+    if (current.pr?.retry?.nextAttemptAt) current.pr.retry.nextAttemptAt = new Date(0).toISOString();
+  });
+}
 
 test('development graph is generic: continuous detached producer, root 6, one three-slot engineering/review pool', async () => {
   const graph = normalizeDefinition(JSON.parse(await readFile(graphFile, 'utf8')));
@@ -803,6 +820,81 @@ test('a closed PR returns to engineering on the same requirement', async t => {
   assert.equal(reworked.status, 'engineering-ready');
   assert.equal(reworked.feedback.at(-1).scope, 'pr');
 });
+test('a transient GitHub failure retries the PR watcher instead of failing the packet', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await mutatePrState(prState, (pr, state) => { state.fail = { match: 'pr view', remaining: 1, stderr: 'HTTP 503 Service Unavailable' }; });
+  const first = await watch(store, item.id, item.claimId);
+  assert.equal(first.outcome, 'waiting');
+  assert.match(first.reason, /transient failure/);
+  let current = await store.get(item.id);
+  assert.equal(current.pr.retry.failures, 1);
+  assert.ok(current.pr.retry.nextAttemptAt);
+  const skipped = await watch(store, item.id, item.claimId);
+  assert.equal(skipped.outcome, 'waiting');
+  assert.match(skipped.reason, /backoff/);
+  current = await store.get(item.id);
+  assert.equal(current.pr.retry.failures, 1, 'a backoff poll does not hit GitHub');
+  await advanceRetry(store, item);
+  await addPrComment(prState, { body: '[verdict=pass]' });
+  await addPrComment(prState, { body: '@workflow merge' });
+  const passed = await watch(store, item.id, item.claimId);
+  assert.equal(passed.outcome, 'pass');
+  assert.equal((await store.get(item.id)).pr.retry, null);
+});
+
+test('a rate-limit response backs off instead of hammering GitHub', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await mutatePrState(prState, (pr, state) => { state.fail = { match: 'pr view', remaining: 1, stderr: 'HTTP 429: API rate limit exceeded' }; });
+  const first = await watch(store, item.id, item.claimId);
+  assert.equal(first.outcome, 'waiting');
+  const current = await store.get(item.id);
+  assert.equal(current.pr.retry.failures, 1);
+  assert.match(current.pr.retry.lastError, /rate limit/i);
+});
+
+test('repeated transient failures reach an explicit attention state', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await mutatePrState(prState, (pr, state) => { state.fail = { match: 'pr view', remaining: 50, stderr: 'HTTP 503 Service Unavailable' }; });
+  for (let index = 0; index < 6; index += 1) {
+    assert.equal((await watch(store, item.id, item.claimId)).outcome, 'waiting');
+    await advanceRetry(store, item);
+  }
+  let current = await store.get(item.id);
+  assert.equal(current.pr.retry.failures, 6);
+  assert.equal(current.pr.retry.exhausted, true);
+  assert.equal(current.pr.protocol.next, 'attention');
+  const short = await watch(store, item.id, item.claimId);
+  assert.equal(short.outcome, 'waiting');
+  assert.match(short.reason, /exhausted/);
+  current = await store.get(item.id);
+  assert.equal(current.pr.retry.failures, 6, 'an exhausted watcher stops calling GitHub');
+});
+
+test('permanent GitHub auth/scope failures still fail the packet', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await mutatePrState(prState, (pr, state) => { state.fail = { match: 'pr view', remaining: 1, stderr: 'HTTP 403: missing required scopes: workflow' }; });
+  await assert.rejects(watch(store, item.id, item.claimId), /403|scopes/);
+  assert.equal((await store.get(item.id)).pr.retry, undefined);
+});
+
+test('a lost merge response is detected on the next poll and never replays the merge', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '[verdict=pass]' });
+  await addPrComment(prState, { body: '@workflow merge' });
+  await mutatePrState(prState, (pr, state) => { state.mergeThenFailView = true; });
+  const first = await merge(store, item.id, item.claimId);
+  assert.equal(first.outcome, 'waiting');
+  assert.match(first.reason, /transient failure/);
+  const retrying = await store.get(item.id);
+  assert.equal(retrying.status, 'human-pending');
+  assert.equal(retrying.pr.retry.failures, 1);
+  assert.equal(JSON.parse(await readFile(prState, 'utf8')).prs[0].state, 'MERGED', 'the merge itself succeeded');
+  await advanceRetry(store, item);
+  const second = await merge(store, item.id, item.claimId);
+  assert.equal(second.outcome, 'merged');
+  assert.equal((await store.get(item.id)).status, 'merged');
+});
+
 test('pr-init checks and safely creates the labels and PR template', async t => {
   const base = await fixture(t);
   const { state } = await withPullRequestFixture(t, base);
@@ -814,7 +906,7 @@ test('pr-init checks and safely creates the labels and PR template', async t => 
   assert.equal(applied.outcome, 'complete');
   assert.equal(applied.output.checks.find(check => check.id === 'requirement-labels').ok, true);
   const fake = JSON.parse(await readFile(state, 'utf8'));
-  for (const label of ['workflow:merge-ready', 'workflow:requirement-review', 'workflow:requirement-approved', 'workflow:requirement-rejected']) assert.ok(fake.labels.includes(label), label);
+  for (const label of ['workflow:merge-ready', 'workflow:merge', 'workflow:requirement-review', 'workflow:requirement-approved', 'workflow:requirement-rejected']) assert.ok(fake.labels.includes(label), label);
   const template = await readFile(path.join(base.repo, '.github', 'pull_request_template.md'), 'utf8');
   assert.match(template, /^<!-- workflow/);
   assert.match(template, /stage=implementing/);

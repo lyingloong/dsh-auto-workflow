@@ -271,7 +271,7 @@ button { cursor: pointer; }
           <button type="button" id="zoomOut" title="缩小">−</button>
           <span class="zoom-label" id="zoomLabel">100%</span>
           <button type="button" id="zoomIn" title="放大">＋</button>
-          <button type="button" id="graphMode" title="切换简化/完整节点图">简化</button>
+          <button type="button" id="graphMode" title="切换 完整 / 简化 / 极简 节点图">简化</button>
           <button type="button" id="fitAll" title="适应画布">适应</button>
           <button type="button" id="fitOne" title="实际大小">1:1</button>
         </div>
@@ -388,10 +388,60 @@ button { cursor: pointer; }
     const tone = errors ? "error" : waiting ? "waiting" : status;
     return { status, tone, errors, active, queued, waiting, capacity: Math.max(1, number(value.capacity || node.concurrency || 1)) };
   }
+  function minimalDefinition(definition) {
+    // Only the decision gates and model workers, with hidden nodes compressed
+    // into direct edges. Busy retry gates are infrastructure, not workflow steps.
+    // A fan-out's target is a real runtime entry, so treat it as an implied edge.
+    const kept = definition.nodes.filter(node => node.type === "agent" || (node.type === "gate" && !node.id.startsWith("busy-")));
+    const keep = new Set(kept.map(node => node.id));
+    const outgoing = new Map();
+    const link = (from, to, on) => {
+      if (!outgoing.has(from)) outgoing.set(from, []);
+      outgoing.get(from).push({ to, on });
+    };
+    for (const edge of definition.edges) link(edge.from, edge.to, edge.on);
+    for (const node of definition.nodes) {
+      if (node.type === "fanout" && typeof node.config?.target === "string") link(node.id, node.config.target, "complete");
+    }
+    const edges = [], seen = new Set();
+    for (const node of kept) {
+      const queue = [node.id], visited = new Set([node.id]);
+      while (queue.length) {
+        const current = queue.shift();
+        for (const edge of outgoing.get(current) || []) {
+          if (keep.has(edge.to)) {
+            if (edge.to === node.id) continue;
+            const key = node.id + "→" + edge.to;
+            if (!seen.has(key)) { seen.add(key); edges.push({ from: node.id, to: edge.to, on: edge.on }); }
+          } else if (!visited.has(edge.to)) {
+            visited.add(edge.to);
+            queue.push(edge.to);
+          }
+        }
+      }
+    }
+    return { ...definition, nodes: kept, edges };
+  }
   function visibleDefinition() {
     if (graphMode === "full") return state.definition;
+    if (graphMode === "minimal") return minimalDefinition(state.definition);
     const hidden = new Set(state.definition.nodes.filter(node => node.id.startsWith("busy-")).map(node => node.id));
     return { ...state.definition, nodes: state.definition.nodes.filter(node => !hidden.has(node.id)), edges: state.definition.edges.filter(edge => !hidden.has(edge.from) && !hidden.has(edge.to)) };
+  }
+  const GRAPH_MODES = ["full", "simple", "minimal"];
+  const GRAPH_NEXT = { full: "简化", simple: "极简", minimal: "完整" };
+  const GRAPH_HINT = {
+    full: "完整图 · 活跃/容量 · 拖拽/滚轮缩放",
+    simple: "简化：隐藏 busy 重试门 · 方块颜色=状态",
+    minimal: "极简：只保留 agent 与关键 gate · 隐藏节点路径已压缩",
+  };
+  function updateGraphModeUi() {
+    $("graphMode").textContent = GRAPH_NEXT[graphMode] || "简化";
+    $("graphHint").textContent = GRAPH_HINT[graphMode] || GRAPH_HINT.full;
+  }
+  function cycleGraphMode() {
+    graphMode = GRAPH_MODES[(GRAPH_MODES.indexOf(graphMode) + 1) % GRAPH_MODES.length];
+    updateGraphModeUi();
   }
   function historyKey(nodeId) { return JSON.stringify([state.run?.runId, nodeId]); }
   function artifactKey(ref) { return JSON.stringify([state.run?.runId, ref]); }
@@ -744,7 +794,7 @@ button { cursor: pointer; }
           ? { x: Math.max(30, source.x - 34), y: Math.max(16, source.y - 12) }
           : { x: Math.min(width - 30, source.x + 36), y: Math.max(16, source.y - 12) };
       }
-      rendered.push({ d: roundedPath(points), lx: Math.max(30, Math.min(width - 30, label.x)), ly: Math.max(14, Math.min(height - 14, label.y)), label: edge.on || "complete" });
+      rendered.push({ d: roundedPath(points), lx: Math.max(30, Math.min(width - 30, label.x)), ly: Math.max(14, Math.min(height - 14, label.y)), label: graphMode === "minimal" ? null : (edge.on || "complete") });
     }
     return { width, height, nodes, edges: rendered };
   }
@@ -800,7 +850,7 @@ button { cursor: pointer; }
     parts.push('<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#97a1ad"/></marker></defs>');
     for (const edge of graph.edges) {
       parts.push('<path d="' + edge.d + '" fill="none" stroke="#97a1ad" stroke-width="1.35" stroke-linejoin="round" marker-end="url(#arrow)"/>');
-      if (edge.label !== "complete") {
+      if (edge.label && edge.label !== "complete") {
         const width = Math.max(22, edge.label.length * 5.2 + 10);
         parts.push('<rect x="' + (edge.lx - width / 2) + '" y="' + (edge.ly - 7) + '" width="' + width + '" height="14" rx="7" class="edge-pill"/>');
         parts.push('<text x="' + edge.lx + '" y="' + (edge.ly + 3) + '" text-anchor="middle" class="edge-label">' + esc(edge.label) + "</text>");
@@ -1184,8 +1234,7 @@ button { cursor: pointer; }
     const status = $("status");
     status.className = "status " + (Object.hasOwn(STATUS, state.run?.status) ? state.run.status : "");
     status.textContent = safeText(state.run ? (STATUS[state.run.status] || state.run.status) : "未运行");
-    $("graphMode").textContent = graphMode === "simple" ? "完整" : "简化";
-    $("graphHint").textContent = graphMode === "simple" ? "简化：隐藏 busy 重试门 · 方块颜色=状态" : "完整图 · 活跃/容量 · 拖拽/滚轮缩放";
+    updateGraphModeUi();
     const command = state.permissions?.command;
     const http = state.permissions?.http;
     const commandText = command?.mode === "full" ? "完整" : command?.mode === "allowlist" ? "白名单" : "关闭";
@@ -1291,10 +1340,8 @@ button { cursor: pointer; }
   $("fitAll").addEventListener("click", () => fitView("all"));
   $("fitOne").addEventListener("click", () => fitView("one"));
   $("graphMode").addEventListener("click", () => {
-    graphMode = graphMode === "full" ? "simple" : "full";
+    cycleGraphMode();
     view.initialized = false;
-    $("graphMode").textContent = graphMode === "simple" ? "完整" : "简化";
-    $("graphHint").textContent = graphMode === "simple" ? "简化：隐藏 busy 重试门 · 方块颜色=状态" : "完整图 · 活跃/容量 · 拖拽/滚轮缩放";
     renderGraph(); fitView("all");
   });
   $("closeDetail").addEventListener("click", () => { selected = null; renderDetail(); });

@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { git, checkedWorktree, targetReady, ancestor, commitId, clean } from './worktrees.mjs';
-import { gh, ghJson, repoCoordinates } from './github.mjs';
+import { gh, ghJson, repoCoordinates, classifyGitHubError, githubBackoff, GITHUB_RETRY_LIMIT } from './github.mjs';
 import { redactForPublic, REVIEW_LABEL, APPROVED_LABEL, REJECTED_LABEL, REQUIREMENT_LABELS } from './requirement-review.mjs';
 import { MERGE_LABEL, MERGE_INTENT_LABEL, evaluateFeedback } from './pr-feedback.mjs';
 
@@ -218,6 +218,39 @@ function waitingReason(feedback) {
   return 'No authorized verdict yet';
 }
 
+function retryState(item) {
+  const value = item.pr?.retry;
+  return value && typeof value === 'object' ? value : null;
+}
+function retryDue(item) {
+  const at = Date.parse(item.pr?.retry?.nextAttemptAt ?? '');
+  return !Number.isFinite(at) || Date.now() >= at;
+}
+/** Persist one transient failure with bounded exponential backoff. */
+function noteGitHubFailure(item, error) {
+  const failures = (retryState(item)?.failures ?? 0) + 1;
+  const exhausted = failures >= GITHUB_RETRY_LIMIT;
+  const delay = exhausted ? null : githubBackoff(failures);
+  item.pr = {
+    ...(item.pr ?? {}),
+    retry: {
+      failures,
+      lastError: String(error?.message ?? error).slice(0, 500),
+      lastAt: new Date().toISOString(),
+      nextAttemptAt: delay === null ? null : new Date(Date.now() + delay).toISOString(),
+      exhausted,
+    },
+  };
+  return item.pr.retry;
+}
+function clearGitHubRetry(item) { if (item.pr?.retry) item.pr = { ...item.pr, retry: null }; }
+function attentionProtocol(item) {
+  return { ...(item.pr?.protocol ?? protocolFor(item)), stage: 'blocked', next: 'attention' };
+}
+function backoffResult(item, reason) {
+  return { item, outcome: 'waiting', pr: item.pr, feedback: null, reason };
+}
+
 /** Persist the protocol block and merge-ready label for the current decision. */
 async function syncProtocol(store, item, pr, feedback) {
   const previous = item.pr?.protocol ?? protocolFor(item);
@@ -387,29 +420,50 @@ export async function watch(store, id, claimId) {
   return store.locked(() => store.mutate(id, claimId, async item => {
     if (!['human-pending', 'approved'].includes(item.status)) throw new Error('PR watch requires a reviewed requirement');
     if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
-    const pr = normalisePr(await viewPr(store, item.pr.number));
-    item.pr = { ...item.pr, ...pr };
-    if (pr.state === 'MERGED') {
-      await setMergeLabel(store, pr.number, false);
-      await verifyExternalMerge(store, item);
-      return { item, outcome: 'merged', pr, feedback: null };
+    const retry = retryState(item);
+    if (retry?.exhausted) {
+      item.pr.protocol = attentionProtocol(item);
+      return backoffResult(item, `GitHub retry exhausted: ${retry.lastError}`);
     }
-    if (pr.state === 'CLOSED') {
-      await setMergeLabel(store, pr.number, false);
-      return { item, outcome: 'closed', pr, feedback: null, reason: 'PR was closed without merge' };
+    if (retry && !retryDue(item)) return backoffResult(item, `GitHub backoff until ${retry.nextAttemptAt}`);
+    try {
+      const pr = normalisePr(await viewPr(store, item.pr.number));
+      item.pr = { ...item.pr, ...pr };
+      clearGitHubRetry(item);
+      if (pr.state === 'MERGED') {
+        await setMergeLabel(store, pr.number, false);
+        await verifyExternalMerge(store, item);
+        return { item, outcome: 'merged', pr, feedback: null };
+      }
+      if (pr.state === 'CLOSED') {
+        await setMergeLabel(store, pr.number, false);
+        return { item, outcome: 'closed', pr, feedback: null, reason: 'PR was closed without merge' };
+      }
+      if (pr.isDraft) return { item, outcome: 'waiting', pr, feedback: null, reason: 'PR is still a draft' };
+      const feedback = await feedbackFor(store, item, pr);
+      item.pr.feedback = {
+        head: feedback.head, verdict: feedback.verdict, decision: feedback.decision,
+        mergeIntent: feedback.mergeIntent, mergeSatisfied: feedback.mergeSatisfied,
+        ci: feedback.ci, unresolved: feedback.unresolved, checkedAt: new Date().toISOString(),
+      };
+      const protocol = await syncProtocol(store, item, pr, feedback);
+      const outcome = feedback.verdict === 'revise' || feedback.unresolved > 0
+        ? 'revise'
+        : protocol.stage === 'merge-ready' ? 'pass' : 'waiting';
+      return { item, outcome, pr, feedback, reason: outcome === 'waiting' ? waitingReason(feedback) : null };
+    } catch (error) {
+      if (classifyGitHubError(error) !== 'transient') throw error;
+      const failed = noteGitHubFailure(item, error);
+      item.pr.protocol = failed.exhausted
+        ? attentionProtocol(item)
+        : { ...(item.pr.protocol ?? protocolFor(item)), stage: 'verifying', next: 'check' };
+      if (failed.exhausted && item.pr?.number) {
+        // Best-effort visibility on GitHub; the local retry state is already the
+        // authoritative record when the API is still down.
+        try { await writeProtocol(store, item, item.pr, item.pr.protocol); await setMergeLabel(store, item.pr.number, false); } catch { /* persisted locally */ }
+      }
+      return backoffResult(item, `GitHub transient failure (${failed.failures}/${GITHUB_RETRY_LIMIT}): ${failed.lastError}`);
     }
-    if (pr.isDraft) return { item, outcome: 'waiting', pr, feedback: null, reason: 'PR is still a draft' };
-    const feedback = await feedbackFor(store, item, pr);
-    item.pr.feedback = {
-      head: feedback.head, verdict: feedback.verdict, decision: feedback.decision,
-      mergeIntent: feedback.mergeIntent, mergeSatisfied: feedback.mergeSatisfied,
-      ci: feedback.ci, unresolved: feedback.unresolved, checkedAt: new Date().toISOString(),
-    };
-    const protocol = await syncProtocol(store, item, pr, feedback);
-    const outcome = feedback.verdict === 'revise' || feedback.unresolved > 0
-      ? 'revise'
-      : protocol.stage === 'merge-ready' ? 'pass' : 'waiting';
-    return { item, outcome, pr, feedback, reason: outcome === 'waiting' ? waitingReason(feedback) : null };
   }), 'integration');
 }
 
@@ -441,73 +495,94 @@ export async function merge(store, id, claimId) {
   return store.locked(() => store.mutate(id, claimId, async item => {
     if (!['human-pending', 'approved'].includes(item.status)) throw new Error('PR merge requires a reviewed requirement');
     if (!item.pr?.number) throw new Error('No PR recorded for this requirement');
-    let pr = normalisePr(await viewPr(store, item.pr.number));
-    item.pr = { ...item.pr, ...pr };
-    if (pr.state === 'MERGED') {
-      await setMergeLabel(store, pr.number, false);
-      await verifyExternalMerge(store, item);
-      return { item, outcome: 'merged', pr, feedback: null };
+    const retry = retryState(item);
+    if (retry?.exhausted) {
+      item.pr.protocol = attentionProtocol(item);
+      return backoffResult(item, `GitHub retry exhausted: ${retry.lastError}`);
     }
-    if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback: null, reason: 'PR was closed before merge' };
-    let feedback = await feedbackFor(store, item, pr);
-    if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
-      await syncProtocol(store, item, pr, feedback);
-      return { item, outcome: 'revise', pr, feedback };
-    }
-    if (feedback.verdict !== 'pass' || !['pass', 'none'].includes(feedback.ci) || !feedback.mergeSatisfied) {
-      await syncProtocol(store, item, pr, feedback);
-      return { item, outcome: 'waiting', pr, feedback, reason: waitingReason(feedback) };
-    }
-    await verifyReviewedCommit(store, item);
-    // Re-read after the slow verification so a comment or push during it cannot
-    // slip past the gate; the merge must still match this exact head.
-    pr = normalisePr(await viewPr(store, item.pr.number));
-    item.pr = { ...item.pr, ...pr };
-    if (pr.state === 'MERGED') {
-      await setMergeLabel(store, pr.number, false);
-      await verifyExternalMerge(store, item);
-      return { item, outcome: 'merged', pr, feedback };
-    }
-    if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback, reason: 'PR was closed during merge verification' };
-    feedback = await feedbackFor(store, item, pr);
-    if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
-      await syncProtocol(store, item, pr, feedback);
-      return { item, outcome: 'revise', pr, feedback };
-    }
-    if (feedback.verdict !== 'pass' || !['pass', 'none'].includes(feedback.ci) || !feedback.mergeSatisfied) {
-      await syncProtocol(store, item, pr, feedback);
-      return { item, outcome: 'waiting', pr, feedback, reason: waitingReason(feedback) };
-    }
+    if (retry && !retryDue(item)) return backoffResult(item, `GitHub backoff until ${retry.nextAttemptAt}`);
     try {
-      await gh(store.config.repoRoot, 'pr', 'merge', String(pr.number), '--merge');
-    } catch (error) {
-      // An external merge can win the race; re-read before failing the packet.
-      const after = normalisePr(await viewPr(store, item.pr.number));
-      item.pr = { ...item.pr, ...after };
-      if (after.state === 'MERGED') {
-        await setMergeLabel(store, after.number, false);
+      let pr = normalisePr(await viewPr(store, item.pr.number));
+      item.pr = { ...item.pr, ...pr };
+      clearGitHubRetry(item);
+      if (pr.state === 'MERGED') {
+        await setMergeLabel(store, pr.number, false);
         await verifyExternalMerge(store, item);
-        return { item, outcome: 'merged', pr: after, feedback };
+        return { item, outcome: 'merged', pr, feedback: null };
       }
-      if (after.state === 'CLOSED') return { item, outcome: 'revise', pr: after, feedback, reason: 'PR was closed during merge' };
-      throw error;
+      if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback: null, reason: 'PR was closed before merge' };
+      let feedback = await feedbackFor(store, item, pr);
+      if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
+        await syncProtocol(store, item, pr, feedback);
+        return { item, outcome: 'revise', pr, feedback };
+      }
+      if (feedback.verdict !== 'pass' || !['pass', 'none'].includes(feedback.ci) || !feedback.mergeSatisfied) {
+        await syncProtocol(store, item, pr, feedback);
+        return { item, outcome: 'waiting', pr, feedback, reason: waitingReason(feedback) };
+      }
+      await verifyReviewedCommit(store, item);
+      // Re-read after the slow verification so a comment or push during it cannot
+      // slip past the gate; the merge must still match this exact head.
+      pr = normalisePr(await viewPr(store, item.pr.number));
+      item.pr = { ...item.pr, ...pr };
+      if (pr.state === 'MERGED') {
+        await setMergeLabel(store, pr.number, false);
+        await verifyExternalMerge(store, item);
+        return { item, outcome: 'merged', pr, feedback };
+      }
+      if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback, reason: 'PR was closed during merge verification' };
+      feedback = await feedbackFor(store, item, pr);
+      if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
+        await syncProtocol(store, item, pr, feedback);
+        return { item, outcome: 'revise', pr, feedback };
+      }
+      if (feedback.verdict !== 'pass' || !['pass', 'none'].includes(feedback.ci) || !feedback.mergeSatisfied) {
+        await syncProtocol(store, item, pr, feedback);
+        return { item, outcome: 'waiting', pr, feedback, reason: waitingReason(feedback) };
+      }
+      try {
+        await gh(store.config.repoRoot, 'pr', 'merge', String(pr.number), '--merge');
+      } catch (error) {
+        // An external merge can win the race; re-read before classifying. A
+        // transient re-read failure must not replay the merge; the next poll
+        // re-reads first and either verifies the merge or retries it.
+        const after = normalisePr(await viewPr(store, item.pr.number));
+        item.pr = { ...item.pr, ...after };
+        if (after.state === 'MERGED') {
+          await setMergeLabel(store, after.number, false);
+          await verifyExternalMerge(store, item);
+          return { item, outcome: 'merged', pr: after, feedback };
+        }
+        if (after.state === 'CLOSED') return { item, outcome: 'revise', pr: after, feedback, reason: 'PR was closed during merge' };
+        throw error;
+      }
+      pr = normalisePr(await viewPr(store, item.pr.number));
+      item.pr = { ...item.pr, ...pr };
+      if (pr.state !== 'MERGED') return { item, outcome: 'waiting', pr, feedback, reason: 'GitHub did not report the PR as merged yet' };
+      item.pr.mergeDecision = {
+        policy: store.config.mergePolicy,
+        verdict: feedback.verdict,
+        decision: feedback.decision,
+        mergeIntent: feedback.mergeIntent,
+        head: feedback.head,
+        mergedAt: new Date().toISOString(),
+        mergeCommit: null,
+      };
+      await setMergeLabel(store, pr.number, false);
+      await verifyExternalMerge(store, item);
+      item.pr.mergeDecision.mergeCommit = item.integration?.mergeCommit ?? null;
+      return { item, outcome: 'merged', pr, feedback };
+    } catch (error) {
+      if (classifyGitHubError(error) !== 'transient') throw error;
+      const failed = noteGitHubFailure(item, error);
+      item.pr.protocol = failed.exhausted
+        ? attentionProtocol(item)
+        : { ...(item.pr.protocol ?? protocolFor(item)), stage: 'verifying', next: 'check' };
+      if (failed.exhausted && item.pr?.number) {
+        try { await writeProtocol(store, item, item.pr, item.pr.protocol); await setMergeLabel(store, item.pr.number, false); } catch { /* persisted locally */ }
+      }
+      return backoffResult(item, `GitHub transient failure (${failed.failures}/${GITHUB_RETRY_LIMIT}); the next merge attempt re-reads the PR first: ${failed.lastError}`);
     }
-    pr = normalisePr(await viewPr(store, item.pr.number));
-    item.pr = { ...item.pr, ...pr };
-    if (pr.state !== 'MERGED') return { item, outcome: 'waiting', pr, feedback, reason: 'GitHub did not report the PR as merged yet' };
-    item.pr.mergeDecision = {
-      policy: store.config.mergePolicy,
-      verdict: feedback.verdict,
-      decision: feedback.decision,
-      mergeIntent: feedback.mergeIntent,
-      head: feedback.head,
-      mergedAt: new Date().toISOString(),
-      mergeCommit: null,
-    };
-    await setMergeLabel(store, pr.number, false);
-    await verifyExternalMerge(store, item);
-    item.pr.mergeDecision.mergeCommit = item.integration?.mergeCommit ?? null;
-    return { item, outcome: 'merged', pr, feedback };
   }), 'integration');
 }
 

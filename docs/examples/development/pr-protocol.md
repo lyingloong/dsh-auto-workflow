@@ -81,6 +81,14 @@ workflow 只认这些确定性信号：
 
 阻塞反馈（`revise` 或 unresolved thread）会：移除 `workflow:merge-ready`，把同一条返修反馈写回需求（按评论/review id 去重），清除内部批准，回到同 ID/分支/worktree/PR 的 `begin-engineering`，不会合并。
 
+## 4.5 瞬态失败与退避
+
+- 瞬态：连接重置/拒绝、DNS/超时、`connectex`/`wsarecv`/`dial tcp`、HTTP 5xx、429/rate limit。
+- 永久：401、403（非 rate limit）、缺少 scope、404、422 校验、merge 冲突、branch protection、PR 已合并/已关闭。
+- 瞬态失败写入 PR 的 `retry` 状态（失败次数、最后错误、下一次尝试时间、是否耗尽），`pr-watch` 返回 `waiting` 而不是失败 packet；退避期间不请求 GitHub。
+- 连续 6 次瞬态失败后进入 `stage=blocked`、`next=attention`，停止自动重试，等待人工。
+- `pr-merge` 丢失合并响应时先重读 PR：已合并则验证清理，不会重复 merge。
+
 ## 5. Finding 生命周期
 
 - finding 使用稳定编号 `F1/F2/...`；
