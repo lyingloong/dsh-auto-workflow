@@ -43,7 +43,7 @@
 | `gate` | `delayMs` 延迟准入；不是任务超时，也不是隐含审批。 |
 | `subworkflow` | 内联串行子图，不含 Human/fanout。 |
 
-可直接阅读唯一主示例的 [完整定义](<examples/development/workflow.json>)，无需另维护一份简化图。执行前应以当前 Host 工具 schema 为准校验参数。
+可直接阅读开发示例的 [完整定义](<examples/development/workflow.json>)，无需另维护一份简化图。执行前应以当前 Host 工具 schema 为准校验参数。
 
 ### 输入映射
 
@@ -100,7 +100,7 @@ agent 节点会请求宿主的结构化输出契约：当 provider 声明 `outpu
 
 ## 3. 权限
 
-权限不属于节点图，不能由图自行扩权。使用 command/HTTP 之前，先询问用户批准 `deny`（默认）、受限 `allowlist` 或 `full`，然后与定义一并提交。主示例的受限授权为：
+权限不属于节点图，不能由图自行扩权。使用 command/HTTP 之前，先询问用户批准 `deny`（默认）、受限 `allowlist` 或 `full`，然后与定义一并提交。开发示例的受限授权为：
 
 ```json
 {

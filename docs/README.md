@@ -4,16 +4,24 @@
 
 ## 第一次使用
 
-1. [项目首页](<../README.md>)：安装、快速使用、主业务图、七个工具与安全边界。
-2. [GitHub 项目本地持续开发](<examples/development/README.md>)：唯一主示例；克隆项目、materialize 脚本、初始化外部数据目录、PR 契约、输入需求、启动 producer、Human brief 和外部/self-merge。
-3. [验证说明](<verification.md>)：回归覆盖、真实模型执行概况及尚未承诺的边界。
+1. [项目首页](<../README.md>)：安装、示例索引、七个工具与安全边界。
+2. [验证说明](<verification.md>)：回归覆盖、发布校验及尚未承诺的通用边界。
+
+## 示例
+
+| 文档 | 负责回答的问题 |
+| --- | --- |
+| [GitHub 项目本地持续开发](<examples/development/README.md>) | 克隆项目、materialize 脚本、初始化外部数据目录、PR 契约、输入需求、启动 producer、Human brief 和外部/self-merge。 |
+| [业务流程与保证](<examples/development/workflow-summary.md>) | 该示例的用户优先、稳定 ID、每需求分支/worktree/PR、3+3 池、revision/epoch、审批与保留策略。 |
+| [开发示例验收记录](<examples/development/verification.md>) | 该示例的真实 Harness/模型/Git 验收与专项审计覆盖。 |
+
+后续示例放在 `docs/examples/<name>/`，各自维护 README、定义与业务流程说明。
 
 ## 参考与排障
 
 | 文档 | 负责回答的问题 |
 | --- | --- |
 | [插件参考](<plugin-summary.md>) | 定义、节点、输入映射、模型回退、JSON command 协议、权限和状态存储。 |
-| [业务流程与保证](<workflow-summary.md>) | 用户优先、稳定 ID、每需求分支/worktree/PR、3+3 池、revision/epoch、审批与保留策略。 |
 | [运行生命周期与排障](<run-lifecycle.md>) | idle、Human 等待、入队、暂停/Stop、Host 中断及显式恢复。 |
 | [v1.2.0 发布说明](<releases/v1.2.0.md>) | DSH 0.2.2 兼容、agent 节点修复、示例 seed 轮转与恢复、`pr-init` manual gate。 |
 | [v1.1.0 发布说明](<releases/v1.1.0.md>) | PR 交流规范、状态块、merge-ready gate、`pr-init` 和外部/self-merge。 |

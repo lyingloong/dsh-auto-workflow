@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 文档结构：开发示例的业务流程、验收记录收拢到 `docs/examples/development/`；README 改为可扩展的“Examples”索引，不再声称“唯一主示例”，通用文档只保留插件层内容并通过链接指向示例。
+
 - intent agent 的 evidence 改为读取完整讨论：issue 的全部评论和 PR 的全部评论 + 正式 review（含旧 head/revision），GitHub API 分页（最多 10 页），最新正文优先（单条 4000 字符、总预算 100k 字符），较旧正文可截断/省略但 id/作者/时间等元数据保留；命令识别仍只看当前窗口。
 
 - 自然语言命令改为显式操作生命周期：accepted → running → completed；返修/修订产生的新 head/revision 通知显示 `A → B` 和“请检查”，不再把触发命令误判为 stale。返修运行期间到达的命令回执为 queued，不自动应用、不静默覆盖；只有从未接受或目标被无关推送改变时才 stale。按 operation/comment id 去重，issue 与 PR 共用同一生命周期。（#38）
@@ -89,7 +91,7 @@
 - Host 常驻期间，idle 和 Human 等待不结束 job，也不阻塞无关 packet；运行状态以引用落盘，产物与有界历史分离。
 - 用户批准的 command/HTTP 权限，默认 deny；有序模型回退与逐候选 reasoning effort。有效的业务返修或拒绝不触发模型回退；模型任务默认无截止时间。
 - 会话看板显示节点池容量、队列与 Human 待办，支持模型选择与按需读取历史/产物；节点队列在独立滚动区域中展示。
-- 唯一主示例：GitHub 项目本地 clone 的持续开发。用户需求 priority `0`、稳定 ID、每需求保留一个 detached worktree、3 engineer + 3 reviewer 池（每需求一位 reviewer）、精确产物绑定的 Human merge 门禁、串行本地集成及默认 `retain`。
+- 开发示例：GitHub 项目本地 clone 的持续开发。用户需求 priority `0`、稳定 ID、每需求保留一个 detached worktree、3 engineer + 3 reviewer 池（每需求一位 reviewer）、精确产物绑定的 Human merge 门禁、串行本地集成及默认 `retain`。
 - 示例包含 typed `busy`、需求 revision 与 `engineeringEpoch` 防陈旧响应、不可变实现/审查记录、显式 snapshot reconciliation、冲突保留和受保护的清理。
 - 源码树使用当前布局 `src/`；历史版本化目录已清理。旧开发期 tag 和本地 `3.0.x` 快照不属于本次发布序列。
 - 中文优先的安装与使用指南、发布说明和公开验证概况；不加入自动 GitHub Issue 抓取、远端 push/PR、远端 merge 或部署。

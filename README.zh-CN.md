@@ -20,7 +20,7 @@
 - **显式控制面。** 有序模型回退、节点并发、可选截止时间、暂停/继续、队列开关、`recover:true` 和 Stop 都是引擎能力，不靠提示词约定。
 - **引用而非内联大对象。** 大输入/输出以引用存放，checkpoint 保持有界。
 - **实时看板。** 从私有 loopback UI 查看节点容量、队列、Human 待办、运行历史和产物。
-- **完整主示例。** GitHub clone 本地持续开发：每需求分支/worktree/PR、GitHub issue 需求审批，以及 GitHub 原生的 PR 合并决定。
+- **可运行示例。** GitHub clone 本地持续开发：每需求分支/worktree/PR、GitHub issue 需求审批，以及 GitHub 原生的 PR 合并决定。
 
 ## 环境要求
 
@@ -45,47 +45,11 @@ dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow
 
 安装后重启 DSH Host，再刷新 Web GUI。安装插件**不会**把示例脚本复制进业务仓库，也**不会**自动启动工作流。
 
-## 快速开始：持续开发一个本地 GitHub clone
+## 示例
 
-唯一主示例是 [GitHub 项目持续开发](docs/examples/development/README.md)。它维护每需求分支、worktree 和 PR，并把需求审批与 PR 合并决定都放到 GitHub 上。
+- **[GitHub 项目持续开发](docs/examples/development/README.md)** —— 克隆 GitHub 仓库，每需求一个分支/attached worktree/PR，把需求审批与 PR 合并决定都放到 GitHub。包含完整节点图、driver、store、PR 协议与操作指南。
 
-1. **准备仓库。** 克隆你有权修改的 GitHub 仓库，配置 `origin` 和 `gh auth login`（或 `GITHUB_TOKEN`）；把示例脚本 materialize 到仓库内并本地提交，选择项目外的 canonical `dataRoot`。
-2. **提交真实需求。** 初始化业务存储（会写入 baseline discovery seeds），再提交用户需求。用户需求优先级固定为 `0`；示例不监听所有聊天，也不自动导入 GitHub Issues。
-3. **授权并定义。** 检查[示例图](docs/examples/development/workflow.json)与模型提示词，明确批准命令 allowlist，再调用 `auto_workflow_define`。HTTP 默认拒绝；agent 工具权限另行控制。
-4. **开始运行。** `auto_workflow_start` 绑定仓库绝对 `cwd` 和 `{ "dataRoot": "…" }`，`auto_workflow_run` 挂载 run。在同一个 run 中向 `mine-gate` **只 enqueue 一次** producer；后续需求继续送入现有 run。
-5. **审核与合并。** 每个需求在 `auto/req-<id>` 分支和独立 worktree 中开发；第一次 snapshot 后推送分支并创建 draft PR。review pass + decision-first brief 后 PR 标记 ready；`pr-watch` 读取协作者的 `[verdict=pass]` 评论或正式 review、未 resolve thread 和 CI，`pr-merge` 在 `mergePolicy` 满足后用 merge commit 合并（默认要求 `@workflow merge` 评论，也支持 `auto` / `label`）。协作者也可以写自然语言 `@workflow` 命令：意图步骤会引用相关评论，返修后只发一次"请检查"并附逐条处理结果。阻塞反馈回到同一分支返修；外部提前 merge 同样会被验证并清理。
-
-### 主业务图
-
-```mermaid
-flowchart TD
-  U[用户 intake · priority 0] --> Q[稳定 ID 的需求队列]
-  U -->|宽泛请求| IP[intake planner · low effort]
-  IP --> Q
-  S[已有证据 seeds] --> M[周期 producer / 挖掘]
-  M --> Q
-  Q --> R{需求来源与风险}
-  R -->|用户 / 挖掘 low| W[每需求一个 auto/req-* 分支和 attached worktree]
-  R -->|挖掘 mid / high| H[GitHub issue 需求审批]
-  H -->|approve| W
-  H -->|reject + 反馈| A[同 ID 修订需求]
-  A --> R
-  W --> E[engineer 池 · 最多 3]
-  E --> I[冻结 revision / epoch / one commit]
-  I --> P[push 分支并创建 draft PR]
-  P --> V[reviewer 池 · 最多 3，每需求一位]
-  V -->|revise| E
-  V -->|pass| B[decision-first brief]
-  B --> L[标记自己的 PR ready]
-  L --> W2[pr-watch · 授权 verdict/review + thread + CI]
-  W2 -->|revise| E
-  W2 -->|pass| M2[pr-merge · mergePolicy 满足]
-  M2 --> T[merge commit + 验证 · 默认清理 worktree]
-  L -->|外部提前 merge| T
-```
-
-根并发上限为 **6**；命令和挖掘也共享这六个槽位。3+3 是两个工作池上限，不是每项需求三位 reviewer。返修保留同一需求 ID、分支、worktree 和 PR；snapshot 把分支压成一个 commit。完整语义见[业务流程与保证](docs/workflow-summary.md)。
-
+示例位于 [`docs/examples/`](docs/examples/development/README.md)，后续会继续添加。业务保证：[业务流程与保证](docs/examples/development/workflow-summary.md)。
 ## 七个工具
 
 | Tool | 用途 |
@@ -142,7 +106,7 @@ npm run verify:release
 
 - [文档导航](docs/README.md)
 - [运行生命周期与排障](docs/run-lifecycle.md)
-- [业务流程与保证](docs/workflow-summary.md)
+- [业务流程与保证](docs/examples/development/workflow-summary.md)
 - [开发示例](docs/examples/development/README.md)
 - [v1.2.0 发布说明](docs/releases/v1.2.0.md) · [v1.0.0](docs/releases/v1.0.0.md)
 

@@ -1,8 +1,39 @@
 # GitHub 项目本地持续开发
 
-这是 `dsh-auto-workflow`的**唯一主示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 decision-first brief，在 PR 上读取授权的 verdict/合并意图，按配置策略用 merge commit 合并或要求同一分支返修；外部提前 merge 也会被验证。需求审批同样在业务仓库的 issue 上完成（工作流只维护自己的审批 issue，不监听任意 Issue）；插件只提供通用调度，示例是应用代码。
+这是 `dsh-auto-workflow` 的 **GitHub 项目本地持续开发示例**：克隆 GitHub 项目，在本地持续处理真实需求。每个需求拥有独立 `auto/req-*` 分支、attached worktree 和 draft PR；工作流审查并生成 decision-first brief，在 PR 上读取授权的 verdict/合并意图，按配置策略用 merge commit 合并或要求同一分支返修；外部提前 merge 也会被验证。需求审批同样在业务仓库的 issue 上完成（工作流只维护自己的审批 issue，不监听任意 Issue）；插件只提供通用调度，示例是应用代码。
 
-**阅读文档不会启动任何操作。** 下面是供操作者检查、替换路径并明确授权后执行的说明，不是对当前仓库或远端的自动操作。首次使用先看 [项目首页](<../../../README.md>)；业务不变量集中在 [流程与保证](<../../workflow-summary.md>)。
+**阅读文档不会启动任何操作。** 下面是供操作者检查、替换路径并明确授权后执行的说明，不是对当前仓库或远端的自动操作。首次使用先看 [项目首页](<../../../README.md>)；业务不变量集中在 [业务流程与保证](<workflow-summary.md>)。
+
+## 流程总览
+
+```mermaid
+flowchart TD
+  U[用户 intake · priority 0] --> Q[稳定 ID 的需求队列]
+  U -->|宽泛请求| IP[intake planner · low effort]
+  IP --> Q
+  S[已有证据 seeds] --> M[周期 producer / 挖掘]
+  M --> Q
+  Q --> R{需求来源与风险}
+  R -->|用户 / 挖掘 low| W[每需求一个 auto/req-* 分支和 attached worktree]
+  R -->|挖掘 mid / high| H[GitHub issue 需求审批]
+  H -->|approve| W
+  H -->|reject + 反馈| A[同 ID 修订需求]
+  A --> R
+  W --> E[engineer 池 · 最多 3]
+  E --> I[冻结 revision / epoch / one commit]
+  I --> P[push 分支并创建 draft PR]
+  P --> V[reviewer 池 · 最多 3，每需求一位]
+  V -->|revise| E
+  V -->|pass| B[decision-first brief]
+  B --> L[标记自己的 PR ready]
+  L --> W2[pr-watch · 授权 verdict/review + thread + CI]
+  W2 -->|revise| E
+  W2 -->|pass| M2[pr-merge · mergePolicy 满足]
+  M2 --> T[merge commit + 验证 · 默认清理 worktree]
+  L -->|外部提前 merge| T
+```
+
+根并发上限为 **6**；命令和挖掘也共享这六个槽位。3+3 是两个工作池上限，不是每项需求三位 reviewer。返修保留同一需求 ID、分支、worktree 和 PR；snapshot 把分支压成一个 commit。完整语义见[业务流程与保证](<workflow-summary.md>)；历史验收与专项审计见[验收记录](<verification.md>)。
 
 ## 组件与准备条件
 
@@ -435,7 +466,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 
 ## 验证与限制
 
-[公开验证说明](<../../verification.md>) 区分回归和真实模型执行。在源码 checkout 中运行包含示例与安全回归的完整测试：
+开发示例的[验收记录](<verification.md>)保留真实模型/Git 验收与专项审计；插件层回归见[公开验证说明](<../../verification.md>)。在源码 checkout 中运行包含示例与安全回归的完整测试：
 
 ```bash
 npm test

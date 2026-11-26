@@ -45,46 +45,11 @@ dsh plugin --profile desktop add /absolute/path/dsh-auto-workflow
 
 Restart the DSH host and refresh the Web GUI after installation. Installing the plugin **does not** copy the example scripts into your repository and **does not** start any workflow.
 
-## Quick start: keep developing a local GitHub clone
+## Examples
 
-The main example is the [GitHub project development workflow](docs/examples/development/README.md). It maintains one branch, worktree and PR per requirement, and moves both requirement approval and PR merge decisions to GitHub.
+- **[GitHub project development workflow](docs/examples/development/README.md)** — clone a GitHub repository, keep one branch, worktree and PR per requirement, and move requirement approval and PR merge decisions to GitHub. The example ships the full graph, driver, store, PR protocol and operational guide.
 
-1. **Prepare a repository.** Clone a GitHub repository you may modify, configure `origin` and `gh auth login` (or `GITHUB_TOKEN`). Materialize the example scripts inside the repository, commit them locally, and pick a canonical `dataRoot` outside the project.
-2. **Submit real work.** Initialize the business store (it seeds baseline discovery directions), then submit a user requirement. User requirements get priority `0`; the example does not listen to every conversation or auto-import GitHub Issues.
-3. **Authorize and define.** Review the [example graph](docs/examples/development/workflow.json) and model prompts, explicitly approve the command allowlist, then call `auto_workflow_define`. HTTP is denied by default; agent tool permissions are controlled separately.
-4. **Run.** `auto_workflow_start` binds the repository's absolute `cwd` and `{ "dataRoot": "…" }`; `auto_workflow_run` mounts the run. Enqueue a producer to `mine-gate` **once** in that run; later requirements go into the same run.
-5. **Review and merge.** Each requirement is implemented on `auto/req-<id>` in its own worktree; the first snapshot pushes the branch and opens a draft PR. After the review passes and a decision-first brief is posted, the PR is marked ready. `pr-watch` reads authorized `[verdict=pass]` comments or formal reviews, unresolved threads and CI, and `pr-merge` merges with a merge commit once the configured `mergePolicy` is satisfied (default: an `@workflow merge` comment; also `auto` or `label`). Authorized collaborators can also use a natural-language `@workflow` command; the intent step cites the referenced comments, and a revise posts one "please check" notification with a per-comment resolution map. Blocking feedback reworks the same branch. An external early merge is verified and cleaned up too.
-
-### Main graph
-
-```mermaid
-flowchart TD
-  U[User intake · priority 0] --> Q[Requirement queue with stable IDs]
-  U -->|Broad request| IP[Intake planner · low effort]
-  IP --> Q
-  S[Evidence seeds] --> M[Periodic producer / mining]
-  M --> Q
-  Q --> R{Source and risk}
-  R -->|User / mined low| W[One auto/req-* branch and attached worktree]
-  R -->|Mined mid / high| H[GitHub issue requirement approval]
-  H -->|approve| W
-  H -->|reject + feedback| A[Same-ID requirement revision]
-  A --> R
-  W --> E[Engineer pool · max 3]
-  E --> I[Freeze revision / epoch / one commit]
-  I --> P[Push branch and create draft PR]
-  P --> V[Reviewer pool · max 3, one per requirement]
-  V -->|revise| E
-  V -->|pass| B[Decision-first brief]
-  B --> L[Mark own PR ready]
-  L --> W2[pr-watch · authorized verdict/review + threads + CI]
-  W2 -->|revise| E
-  W2 -->|pass| M2[pr-merge · mergePolicy satisfied]
-  M2 --> T[merge commit + verify · cleanup by default]
-  L -->|external early merge| T
-```
-
-Root concurrency is **6**; commands and mining share those slots. 3+3 are pool limits, not three reviewers per requirement. Rework keeps the same requirement ID, branch, worktree and PR; a snapshot squashes the branch into one commit. See [Workflow guarantees](docs/workflow-summary.md) for the full semantics.
+Examples live in [`docs/examples/`](docs/examples/development/README.md); more will be added over time. Business guarantees: [Workflow summary](docs/examples/development/workflow-summary.md).
 
 ## The seven tools
 
@@ -142,7 +107,7 @@ Package `1.2.0`, graph `apiVersion: 2`, run state `version: 3` and the example b
 
 - [Documentation map](docs/README.md)
 - [Run lifecycle and troubleshooting](docs/run-lifecycle.md)
-- [Workflow guarantees](docs/workflow-summary.md)
+- [Workflow guarantees](docs/examples/development/workflow-summary.md)
 - [Development example](docs/examples/development/README.md)
 - [Release notes: v1.2.0](docs/releases/v1.2.0.md) · [v1.0.0](docs/releases/v1.0.0.md)
 

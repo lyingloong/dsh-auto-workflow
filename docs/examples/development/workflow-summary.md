@@ -1,8 +1,8 @@
 # 业务流程与保证：GitHub 项目本地持续开发
 
-这是 `dsh-auto-workflow`的**唯一主业务示例**：把 GitHub 仓库克隆到本地，每个需求在独立分支/attached worktree 中开发，由工作流发布自己的 draft PR；经过审查、Human brief 和外部 Codex/人 merge 后，只验证并清理。不是托管机器人，不自动监听聊天或抓取 GitHub Issues，也不自行 merge 远端 PR。
+这是 `dsh-auto-workflow` 的 **GitHub 项目开发示例**：把 GitHub 仓库克隆到本地，每个需求在独立分支/attached worktree 中开发，由工作流发布自己的 draft PR；经过审查、Human brief 和外部 Codex/人 merge 后，只验证并清理。不是托管机器人，不自动监听聊天或抓取 GitHub Issues，也不自行 merge 远端 PR。
 
-[完整操作指南](<examples/development/README.md>) 负责安装后的准备与操作；本页集中说明业务契约。实现由 [节点图](<examples/development/workflow.json>)、[业务存储](<examples/development/store.mjs>)、[本地 Git 模块](<examples/development/worktrees.mjs>) 和 [JSON driver](<examples/development/driver.mjs>) 组成。插件只调度通用 packet 和引用，不解释业务 `dataRef`。
+[完整操作指南](<README.md>) 负责安装后的准备与操作；本页集中说明业务契约。实现由 [节点图](<workflow.json>)、[业务存储](<store.mjs>)、[本地 Git 模块](<worktrees.mjs>) 和 [JSON driver](<driver.mjs>) 组成。插件只调度通用 packet 和引用，不解释业务 `dataRef`。
 
 ## 执行链
 
@@ -64,7 +64,7 @@ Publish/ready/watch/merge 串行使用 store 级 integration lock。PR 发布前
 
 `brief` 在 review pass 后生成 decision-first 摘要（Change、Verification、Review verdict、Merge decision），同一份内容进入 PR body；完整需求/审查证据折叠。review/rework 会 force-push 同一 PR 的新单 commit，并重新绑定 artifact/review/反馈窗口。
 
-PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论不承担状态。workflow 只在 head 匹配、CI 全绿或 `none`、review thread 全 resolve、合并意图满足时设置 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签；head 变化、CI 失败、thread 未关闭或出现 `revise` 时撤销标签并回到返修。完整的判决标记、finding 和合并门规则见 [PR 交流规范](<examples/development/pr-protocol.md>)。
+PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论不承担状态。workflow 只在 head 匹配、CI 全绿或 `none`、review thread 全 resolve、合并意图满足时设置 `stage=merge-ready` 并添加 `workflow:merge-ready` 标签；head 变化、CI 失败、thread 未关闭或出现 `revise` 时撤销标签并回到返修。完整的判决标记、finding 和合并门规则见 [PR 交流规范](<pr-protocol.md>)。
 
 `pr-watch` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；`pr-merge` 在真正合并前重新读取 PR，处理评论变化、外部抢先合并和 PR 关闭。所有合并都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。GitHub 瞬态失败（连接/超时/5xx/rate limit）会写入 `retry` 退避状态并返回 `waiting`，连续 6 次后进入 `attention`；永久错误仍然失败 packet。
 
@@ -78,12 +78,12 @@ PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论�
 
 “持续”只在 Host 常驻运行期间成立；“持久化”提供状态、引用和意图证据，不是跨文件/Git 的掉电事务。失败或中断执行不自动重放，重启 Host 不会替操作者推断哪些副作用已经成功。
 
-snapshot 会先保留精确 `snapshot-pending` 意图。若发布中断，可在检查 HEAD/tree/revision/epoch 后显式 `reconcile-snapshot`：只完成保留的那份 artifact，既有字节不得覆盖；成功后从 `review-input` 进入 review，而不是重跑工程阶段。其他 `preparing`、`integrating`、review 发布或清理的多文件不确定状态仍须人工检查与对账。步骤见 [操作指南的恢复部分](<examples/development/README.md#恢复与排障>)。
+snapshot 会先保留精确 `snapshot-pending` 意图。若发布中断，可在检查 HEAD/tree/revision/epoch 后显式 `reconcile-snapshot`：只完成保留的那份 artifact，既有字节不得覆盖；成功后从 `review-input` 进入 review，而不是重跑工程阶段。其他 `preparing`、`integrating`、review 发布或清理的多文件不确定状态仍须人工检查与对账。步骤见 [操作指南的恢复部分](<README.md#恢复与排障>)。
 
 ## 验证与非目标
 
-[验证说明](<verification.md>) 区分可重复回归与隔离的真实模型/Git 执行，覆盖 3+3 并发、Human 返修、保留 worktree、review/epoch 绑定、typed busy、snapshot reconciliation、冲突和 ignored 数据保护。验证不是任意项目都能无人值守运行的保证。
+[验收记录](<verification.md>) 区分可重复回归与隔离的真实模型/Git 执行，覆盖 3+3 并发、Human 返修、保留 worktree、review/epoch 绑定、typed busy、snapshot reconciliation、冲突和 ignored 数据保护。验证不是任意项目都能无人值守运行的保证。
 
 使用前仍须 materialize 脚本并本地提交干净、配置模型工具与项目实际验证命令、提供真实需求、批准权限，并在运行中避免外部同时修改集成 checkout。备份、远端 PR/push、受保护分支策略、部署和外部数据发现属于操作者职责，不在示例图内。
 
-更多运行时恢复语义见 [生命周期](<run-lifecycle.md>)。
+更多运行时恢复语义见 [生命周期](<../../run-lifecycle.md>)。
