@@ -64,11 +64,18 @@ test('a live lock is not removed and contention is explicit', async t => {
 test('concurrent lockers serialize without losing the lock', async t => {
   const { store } = await fixture(t);
   const order = [];
+  let inside = 0, peak = 0;
+  const action = async name => {
+    inside += 1; peak = Math.max(peak, inside); order.push(name);
+    await delay(30);
+    inside -= 1;
+  };
   await Promise.all([
-    store.locked(async () => { order.push('a'); await delay(30); }, 'store'),
-    store.locked(async () => { order.push('b'); }, 'store'),
+    store.locked(() => action('a'), 'store'),
+    store.locked(() => action('b'), 'store'),
   ]);
-  assert.deepEqual(order, ['a', 'b']);
+  assert.equal(peak, 1, 'only one critical section runs at a time');
+  assert.deepEqual([...order].sort(), ['a', 'b']);
   assert.equal(existsSync(path.join(store.root, 'locks', 'store.lock')), false);
 });
 

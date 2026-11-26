@@ -32,23 +32,39 @@ function evidenceFor(comments, floor) {
 async function acknowledgeStale(store, item, comments, claimId) {
   const floor = Number(item.github.commentFloor ?? 0);
   const acknowledged = new Set((item.acknowledgedCommands ?? []).map(entry => entry.commentId));
+  const operations = item.commandOperations ?? [];
+  const operated = new Set(operations.map(operation => operation.commentId));
   const stale = comments
     .filter(comment => Number(comment.id) <= floor)
     .filter(comment => AUTHORIZED.has(String(comment.author_association ?? '').toUpperCase()))
     .filter(comment => INTENT_COMMAND.test(String(comment.body ?? '')))
     .filter(comment => !acknowledged.has(Number(comment.id)))
+    .filter(comment => !operated.has(Number(comment.id)))
     .sort((a, b) => Number(a.id) - Number(b.id))
     .slice(0, 2);
   if (!stale.length) return item;
   const replies = [];
   for (const comment of stale) {
-    const body = [
-      `已收到评论 #${Number(comment.id)}（授权命令），但它早于当前 revision 审批窗口，未自动应用。`,
-      `当前需求 revision 为 ${item.revision}（${item.status}）。如需按当前 revision 处理，请重新评论 \`@workflow <具体指令>\`，或评论 \`@workflow 确认按当前 revision 处理\` 复用最近一条旧指令；不会静默应用旧命令。`,
-    ].join('\n\n');
+    const at = commentTime(comment);
+    const during = operations.find(operation => operation.commentId !== Number(comment.id)
+      && ['running', 'completed'].includes(operation.state)
+      && Number.isFinite(Date.parse(operation.acceptedAt ?? ''))
+      && at >= Date.parse(operation.acceptedAt)
+      && (!operation.completedAt || at <= Date.parse(operation.completedAt)));
+    const queued = Boolean(during);
+    const body = queued
+      ? [
+        `已收到评论 #${Number(comment.id)}（授权命令）。它是在 revision ${during.targetRevision} 修订运行期间收到的，未自动应用；当前 revision 已是 ${item.revision}（${item.status}）。`,
+        '如需按当前 revision 处理，请重新评论 `@workflow <具体指令>`，或评论 `@workflow 确认按当前 revision 处理` 复用最近一条旧指令；不会静默覆盖正在进行的操作。',
+      ].join('\n\n')
+      : [
+        `已收到评论 #${Number(comment.id)}（授权命令），但它早于当前 revision 审批窗口，未自动应用。`,
+        `当前需求 revision 为 ${item.revision}（${item.status}）。如需按当前 revision 处理，请重新评论 \`@workflow <具体指令>\`，或评论 \`@workflow 确认按当前 revision 处理\` 复用最近一条旧指令；不会静默应用旧命令。`,
+      ].join('\n\n');
     await gh(store.config.repoRoot, 'issue', 'comment', String(item.github.number), '--body', body);
     replies.push({
-      commentId: Number(comment.id), status: 'stale', revision: item.revision, currentRevision: item.revision,
+      commentId: Number(comment.id), status: queued ? 'queued' : 'stale', revision: item.revision, currentRevision: item.revision,
+      targetRevision: during?.targetRevision ?? null, operationId: during?.operationId ?? null,
       body: String(comment.body ?? '').slice(0, 2000), acknowledgedAt: new Date().toISOString(),
     });
   }
@@ -309,11 +325,20 @@ export async function applyIntent(store, id, claimId, { action, commentId, revis
 export async function notifyRevision(store, id, claimId) {
   return store.mutate(id, claimId, async item => {
     const brief = item.revisionBrief;
-    if (!brief || brief.revision !== item.revision || item.notifiedRevision === item.revision) return { item, outcome: 'complete', notified: false };
+    const operation = (item.commandOperations ?? []).find(entry => entry.state === 'running' && entry.commentId === brief?.commentId);
+    const complete = () => {
+      if (!operation) return;
+      operation.state = 'completed';
+      operation.resultRevision = item.revision;
+      operation.completedAt = new Date().toISOString();
+    };
+    if (!brief || brief.revision !== item.revision) return { item, outcome: 'complete', notified: false };
+    if (item.notifiedRevision === item.revision) { complete(); return { item, outcome: 'complete', notified: false }; }
     if (!item.github?.number) throw new Error('Requirement has no review issue');
     const items = brief.items ?? [];
+    const from = operation?.targetRevision ?? Math.max(1, item.revision - 1);
     const body = [
-      `已生成 revision ${item.revision}，请检查。`,
+      `已生成 revision ${from} → ${item.revision}，请检查。`,
       '',
       ...(brief.summary ? [brief.summary, ''] : []),
       ...(items.length ? ['引用反馈：', ...items.map(entry => `- #${entry.commentId}${entry.snippet ? ` · ${entry.snippet}` : ''}${entry.request ? `：${entry.request}` : ''}`), ''] : []),
@@ -321,6 +346,7 @@ export async function notifyRevision(store, id, claimId) {
     ].join('\n');
     await gh(store.config.repoRoot, 'issue', 'comment', String(item.github.number), '--body', body);
     item.notifiedRevision = item.revision;
+    complete();
     return { item, outcome: 'complete' };
   });
 }

@@ -1249,6 +1249,15 @@ test('natural-language issue command revises with a cited brief and notifies onc
   await cli('notify-requirement-revision', envelope);
   fake = JSON.parse(await readFile(state, 'utf8'));
   assert.equal(fake.issues[0].comments.length, count, 'one notification per revision');
+  const after = await base.store.get(item.id);
+  const operation = after.commandOperations.find(entry => entry.commentId === payload.commentId);
+  assert.equal(operation.state, 'completed');
+  assert.equal(operation.targetRevision, 1);
+  assert.equal(operation.resultRevision, 2);
+  assert.match(fake.issues[0].comments.find(comment => comment.body.startsWith('已生成 revision')).body, /revision 1 → 2/);
+  assert.equal((await cli('check-requirement-issue', envelope)).outcome, 'waiting');
+  fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues[0].comments.length, count, 'the applied command is not acknowledged as stale');
 });
 
 test('natural-language requirement approval applies through the issue', async t => {
@@ -1464,4 +1473,69 @@ test('stale PR commands are acknowledged once, ignore unauthorized authors and c
   current = await store.get(item.id);
   assert.equal(current.status, 'engineering-ready');
   assert.equal(current.pr.reworkBrief.summary, '按旧指令返修');
+});
+
+
+test('a successful PR rework completes its command instead of reporting it stale', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '@workflow 按 review 意见修' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'interpret');
+  const commandId = watched.output.command.commentId;
+  assert.equal((await cli('pr-intent-apply', {
+    dataRef: store.ref(item.id), claimId: item.claimId, action: 'revise',
+    commentId: commandId, head: watched.output.head, summary: '按 review 修', cited: [], actor: 'maintainer',
+  })).outcome, 'revise');
+  const running = await store.get(item.id);
+  const operation = running.pr.commandOperations.find(entry => entry.commentId === commandId);
+  assert.equal(operation.state, 'running');
+  const artifact = await implement(store, { ...running, cwd: running.worktreePath }, { contents: 'reworked\n' });
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  assert.equal((await cli('notify-pr-rework', { dataRef: store.ref(item.id), claimId: item.claimId })).outcome, 'complete');
+  const completed = await store.get(item.id);
+  const done = completed.pr.commandOperations.find(entry => entry.commentId === commandId);
+  assert.equal(done.state, 'completed');
+  assert.equal(done.targetHead, watched.output.head);
+  assert.equal(done.resultHead, artifact.commit);
+  let fake = JSON.parse(await readFile(prState, 'utf8'));
+  const notice = fake.prs[0].comments.find(comment => comment.body.includes('请检查'));
+  assert.match(notice.body, /→/);
+  assert.ok(!fake.prs[0].comments.some(comment => comment.body.includes('没有自动应用')));
+  const count = fake.prs[0].comments.length;
+  await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  fake = JSON.parse(await readFile(prState, 'utf8'));
+  assert.equal(fake.prs[0].comments.length, count, 'the completed command is not acknowledged as stale');
+});
+
+test('a command received while a PR rework is running is queued, not applied or called stale', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '@workflow 第一轮返修' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'interpret');
+  assert.equal((await cli('pr-intent-apply', {
+    dataRef: store.ref(item.id), claimId: item.claimId, action: 'revise',
+    commentId: watched.output.command.commentId, head: watched.output.head,
+    summary: '第一轮返修', cited: [], actor: 'maintainer',
+  })).outcome, 'revise');
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await addPrComment(prState, { body: '@workflow 再补充一条错误处理' });
+  const second = JSON.parse(await readFile(prState, 'utf8')).prs[0].comments.at(-1);
+  const running = await store.get(item.id);
+  const artifact = await implement(store, { ...running, cwd: running.worktreePath }, { contents: 'reworked\n' });
+  await publish(store, item.id, item.claimId);
+  await pass(store, item, artifact);
+  await mergeBrief(store, item.id, item.claimId);
+  await ready(store, item.id, item.claimId);
+  await cli('notify-pr-rework', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal((await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId })).outcome, 'waiting');
+  const fake = JSON.parse(await readFile(prState, 'utf8'));
+  assert.ok(fake.prs[0].comments.some(comment => comment.body.includes('返修运行期间')));
+  const current = await store.get(item.id);
+  const queued = current.pr.acknowledgedCommands.find(entry => entry.commentId === second.id);
+  assert.equal(queued.status, 'queued');
+  assert.equal(current.status, 'human-pending');
+  assert.equal(current.pr.reworkBrief.commentId, watched.output.command.commentId, 'the running command is not silently replaced');
 });

@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 自然语言命令改为显式操作生命周期：accepted → running → completed；返修/修订产生的新 head/revision 通知显示 `A → B` 和“请检查”，不再把触发命令误判为 stale。返修运行期间到达的命令回执为 queued，不自动应用、不静默覆盖；只有从未接受或目标被无关推送改变时才 stale。按 operation/comment id 去重，issue 与 PR 共用同一生命周期。（#38）
+
 - 示例 store/integration 锁改为自描述、自愈：owner.json 记录 token/pid/host/runId/tokenId 与获取/更新时间，持有期间心跳；TTL 到期且心跳停止的锁原子备份到 `locks/.stale/` 并写 `locks/events.log`，活锁只返回带 owner 摘要的有界 `BusinessBusy`；释放校验 owner token，旧 owner 不会删除新锁；新增 `driver locks` 只读检查/显式清理和 `status` 锁报告；command 节点获得 `DSH_WORKFLOW_RUN_ID`/`TOKEN_ID`/`PACKET_ID` 环境变量用于锁审计。（#36）
 - 旧 head/revision 的授权 `@workflow` 命令不再被静默忽略：issue/PR watcher 回一条“目标/当前值 + 未自动应用”的回执（按评论 id 去重），并支持 `@workflow 确认按当前 head/revision 处理` 显式复用最近一条旧指令；不会自动应用旧命令。（#37）
 

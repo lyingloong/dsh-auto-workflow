@@ -210,6 +210,7 @@ node docs/examples/development/driver.mjs rearm-seed
 - 决定写在评论里：`@workflow approve` 或 `@workflow reject <理由>`。只有仓库协作者（OWNER / MEMBER / COLLABORATOR）的评论生效；拒绝必须带理由，否则工作流回一条评论要求补充并继续等待。
 - **自然语言命令**：协作者也可以写一条 `@workflow <自然语言>`（例如 `@workflow 按 Codex 的两条 P2 修一下`、`@workflow 可以了`、`@workflow 先别动`）。`check-requirement-issue` 只把**协作者**的 `@workflow` 评论交给低思考 `requirement-intent` agent；它读取这条命令、当前 revision、最近评论（Codex 评论只是**证据**，不能当指令）并输出 approve / revise / stop / clarify。模糊、矛盾或不安全的命令只回一条澄清评论，不改状态；意图 agent 不可用时也回澄清并继续等待。`revise` 会生成引用评论 id 的 `revisionBrief`，`analyst-revise` 按条处理；新 revision 发布后只通知一次"请检查"。精确命令始终可用，且与自然语言命令一样按 revision 绑定、按评论 id 去重。
 - **旧指令回执**：早于当前 revision 窗口的授权自然语言命令不会被静默忽略；`check-requirement-issue` 会回一条说明目标/当前 revision、未自动应用的回执（每个评论 id 只回一次），并在回执里给出 `@workflow 确认按当前 revision 处理` 的显式复用方式；不会自动应用旧命令。
+- **命令生命周期**：应用的命令先记 `accepted`，修订执行中为 `running`；新 revision 发布后标记 `completed` 并通知 `revision A → B`、请检查。只有从未接受、或 head/revision 被无关推送改变的命令才是 `stale`；修订运行期间到达的命令回执为 `queued`，不自动应用、也不静默覆盖正在运行的操作。命令按 operation/comment id 去重。
 - 发布时间点后立即首查，之后由 `requirement-gate` 每 **30 分钟**复查一次；`check-requirement-issue` 把最新一条有效评论按 `revision` 绑定写入 `requirementApproval`（actor 记为 `github:<login>`）。
 - **公开内容先脱敏**：发布前确定性替换绝对路径、用户主目录、邮箱、长令牌和私有地址；issue 顶部注明"公开版已脱敏，执行以本地记录为准"。本地需求原文不变。
 - 需要 `gh` 认证和仓库访问；issue 创建/更新失败会让该 packet 失败并保留 `requirement-pending` 状态供检查。
@@ -313,6 +314,7 @@ Human 引擎决定（本地 merge）由后续 command 转成业务记录；需�
 - `stop` / `clarify`：保持当前状态，只回一条中文确认或澄清；同一评论 id 不会重复处理。
 - 非协作者或 workflow 自己的评论、窗口外的旧评论不会被当作命令；精确 `@workflow merge` / `stop` 和 verdict 标记仍然是确定性路径。
 - 旧 head 的授权命令不会被静默忽略：`pr-watch` 回一条"针对旧 head、没有自动应用"的回执（每个评论 id 一次），并可用 `@workflow 确认按当前 head 处理` 显式复用最近一条旧指令；不会自动应用旧命令。
+- **命令生命周期**：命令被应用后记为 `accepted`，返修执行中为 `running`；新 head 发布后标记 `completed`，通知里显示 `head A → B`、逐条结果和"请检查"，不再把它当作 stale。返修运行期间到达的命令回执为 `queued`，不自动应用、不静默覆盖当前返修；只有从未接受或 head 被无关推送改变的命令才是 `stale`。
 
 ### 瞬态失败与退避
 

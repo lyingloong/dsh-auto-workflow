@@ -280,10 +280,13 @@ function evidenceFor(comments = [], windowStart) {
 async function acknowledgePrStale(store, item, feedback) {
   const handled = new Set(item.pr?.handledIntentIds ?? []);
   const acknowledged = new Set((item.pr?.acknowledgedCommands ?? []).map(entry => entry.commentId));
+  const operations = item.pr?.commandOperations ?? [];
+  const operated = new Set(operations.map(operation => operation.commentId));
   const start = Date.parse(feedback.windowStart ?? '') || 0;
   const stale = (feedback.comments ?? [])
     .filter(entry => !handled.has(Number(entry.id)))
     .filter(entry => !acknowledged.has(Number(entry.id)))
+    .filter(entry => !operated.has(Number(entry.id)))
     .filter(entry => AUTHORIZED_ASSOCIATIONS.has(String(entry.author_association ?? '').toUpperCase()))
     .filter(entry => INTENT_COMMAND.test(String(entry.body ?? '')))
     .filter(entry => {
@@ -297,14 +300,27 @@ async function acknowledgePrStale(store, item, feedback) {
   if (!stale.length) return item;
   for (const entry of stale) {
     const target = String(entry.body ?? '').match(HEAD_MARKER)?.[1]?.toLowerCase() ?? null;
-    const body = [
-      `已收到评论 #${Number(entry.id)}（授权命令），但它针对旧 head（${target ? `\`${target}\`` : '未标记 / 早于当前反馈窗口'}），当前 head 是 \`${String(feedback.head).slice(0, 12)}\`，因此没有自动应用。`,
-      `如需按当前 head 处理，请重新评论 \`@workflow <具体指令>\`，或评论 \`@workflow 确认按当前 head 处理\` 复用最近一条旧指令；不会静默应用旧命令。`,
-    ].join('\n\n');
+    const at = commentTime(entry) || 0;
+    const during = operations.find(operation => operation.commentId !== Number(entry.id)
+      && ['running', 'completed'].includes(operation.state)
+      && Number.isFinite(Date.parse(operation.acceptedAt ?? ''))
+      && at >= Date.parse(operation.acceptedAt)
+      && (!operation.completedAt || at <= Date.parse(operation.completedAt)));
+    const queued = Boolean(during);
+    const body = queued
+      ? [
+        `已收到评论 #${Number(entry.id)}（授权命令）。它是在 head \`${String(during.targetHead ?? '').slice(0, 12)}\` 的返修运行期间收到的，未自动应用；当前 head 是 \`${String(feedback.head).slice(0, 12)}\`。`,
+        '如需按当前 head 处理，请重新评论 `@workflow <具体指令>`，或评论 `@workflow 确认按当前 head 处理` 复用最近一条旧指令；不会静默覆盖正在进行的操作。',
+      ].join('\n\n')
+      : [
+        `已收到评论 #${Number(entry.id)}（授权命令），但它针对旧 head（${target ? `\`${target}\`` : '未标记 / 早于当前反馈窗口'}），当前 head 是 \`${String(feedback.head).slice(0, 12)}\`，因此没有自动应用。`,
+        `如需按当前 head 处理，请重新评论 \`@workflow <具体指令>\`，或评论 \`@workflow 确认按当前 head 处理\` 复用最近一条旧指令；不会静默应用旧命令。`,
+      ].join('\n\n');
     await gh(store.config.repoRoot, 'pr', 'comment', String(item.pr.number), '--body', body);
     const entryRecord = {
-      commentId: Number(entry.id), status: 'stale', head: feedback.head, currentHead: feedback.head,
-      targetHead: target, body: String(entry.body ?? '').slice(0, 2000), acknowledgedAt: new Date().toISOString(),
+      commentId: Number(entry.id), status: queued ? 'queued' : 'stale', head: feedback.head, currentHead: feedback.head,
+      targetHead: target ?? during?.targetHead ?? null, operationId: during?.operationId ?? null,
+      body: String(entry.body ?? '').slice(0, 2000), acknowledgedAt: new Date().toISOString(),
     };
     item.pr.acknowledgedCommands = [...(item.pr.acknowledgedCommands ?? []), entryRecord].slice(-100);
     item.pr.staleCommands = [...(item.pr.staleCommands ?? []), entryRecord].slice(-5);
@@ -721,14 +737,24 @@ export async function notifyRework(store, id, claimId) {
     const brief = item.pr?.reworkBrief;
     const head = item.implementation?.commit;
     if (!brief || !head || !item.pr?.number) return { item, outcome: 'complete', notified: false };
-    if (item.pr.notifiedHead === head) return { item, outcome: 'complete', notified: false };
+    const operation = (item.pr.commandOperations ?? []).find(entry => entry.state === 'running' && entry.commentId === brief.commentId);
+    const complete = () => {
+      if (!operation) return;
+      operation.state = 'completed';
+      operation.resultHead = head;
+      operation.completedAt = new Date().toISOString();
+    };
+    if (item.pr.notifiedHead === head) { complete(); return { item, outcome: 'complete', notified: false }; }
     const mapping = new Map((item.implementation?.rework ?? []).map(row => [Number(row.commentId), row]));
     const lines = (brief.items ?? []).map(entry => {
       const row = mapping.get(Number(entry.commentId));
       return `- #${entry.commentId} · ${row?.status ?? '未声明'}${row?.note ? ` — ${row.note}` : ''}`;
     });
+    const from = operation?.targetHead ?? brief.head;
     const body = [
-      `已更新本 PR 到 head \`${head.slice(0, 12)}\`，请检查。`,
+      from
+        ? `已更新本 PR（head \`${String(from).slice(0, 12)}\` → \`${head.slice(0, 12)}\`），请检查。`
+        : `已更新本 PR 到 head \`${head.slice(0, 12)}\`，请检查。`,
       '',
       ...(brief.summary ? [brief.summary, ''] : []),
       ...(lines.length ? ['逐条反馈：', ...lines, ''] : []),
@@ -736,6 +762,7 @@ export async function notifyRework(store, id, claimId) {
     ].join('\n');
     await gh(store.config.repoRoot, 'pr', 'comment', String(item.pr.number), '--body', body);
     item.pr.notifiedHead = head;
+    complete();
     return { item, outcome: 'complete' };
   });
 }

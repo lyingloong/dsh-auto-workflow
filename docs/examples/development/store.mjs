@@ -721,7 +721,15 @@ export class DevelopmentStore {
       const actorText = actor ? text(actor, 'intent actor', 200) : 'github:intent';
       const noteText = summary ? text(summary, 'intent summary', 1000) : error ? text(error, 'intent error', 500) : '';
       item.intent = { action, commentId: idNumber, revision: item.revision, summary: noteText, cited: items, actor: actorText, at: new Date().toISOString() };
-      item.acknowledgedCommands = [...(item.acknowledgedCommands ?? []), { commentId: idNumber, status: 'applied', action, revision: item.revision, at: new Date().toISOString() }].slice(-100);
+      const operation = {
+        operationId: randomUUID(), commentId: idNumber, actor: actorText, summary: noteText || action,
+        targetRevision: item.revision, state: action === 'revise' ? 'running' : 'completed',
+        acceptedAt: new Date().toISOString(),
+        ...(action === 'revise' ? {} : { completedAt: new Date().toISOString(), resultRevision: item.revision }),
+      };
+      item.commandOperations = [...(item.commandOperations ?? []), operation].slice(-20);
+      item.intent.operationId = operation.operationId;
+      item.acknowledgedCommands = [...(item.acknowledgedCommands ?? []), { commentId: idNumber, status: 'applied', action, revision: item.revision, operationId: operation.operationId, at: new Date().toISOString() }].slice(-100);
       if (action === 'approve') {
         item.requirementApproval = { decision: 'approve', revision: item.revision, actor: actorText, reason: noteText || 'natural-language approval', commentId: idNumber };
         item.status = 'ready';
@@ -758,7 +766,15 @@ export class DevelopmentStore {
       const noteText = summary ? text(summary, 'intent summary', 1000) : error ? text(error, 'intent error', 500) : '';
       item.pr.intent = { action, commentId: idNumber, head, summary: noteText, cited: items, actor: actorText, at: new Date().toISOString() };
       item.pr.handledIntentIds = [...handled, idNumber];
-      item.pr.acknowledgedCommands = [...(item.pr.acknowledgedCommands ?? []), { commentId: idNumber, status: 'applied', action, head, at: new Date().toISOString() }].slice(-100);
+      const operation = {
+        operationId: randomUUID(), commentId: idNumber, actor: actorText, summary: noteText || action,
+        targetHead: head, state: action === 'revise' ? 'running' : 'completed',
+        acceptedAt: new Date().toISOString(),
+        ...(action === 'revise' ? {} : { completedAt: new Date().toISOString(), resultHead: head }),
+      };
+      item.pr.commandOperations = [...(item.pr.commandOperations ?? []), operation].slice(-20);
+      item.pr.intent.operationId = operation.operationId;
+      item.pr.acknowledgedCommands = [...(item.pr.acknowledgedCommands ?? []), { commentId: idNumber, status: 'applied', action, head, operationId: operation.operationId, at: new Date().toISOString() }].slice(-100);
       if (action === 'merge') {
         item.pr.mergeIntent = { commentId: idNumber, actor: actorText, head, summary: noteText, at: new Date().toISOString() };
       } else if (action === 'revise') {
