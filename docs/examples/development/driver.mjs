@@ -18,6 +18,13 @@ export async function stage(name, input) {
 }
 async function executeStage(name, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('DSH_WORKFLOW_INPUT must be a JSON object');
+  if (name === 'locks') {
+    const dataRoot = absolute(input.dataRoot, 'dataRoot');
+    const report = input.apply
+      ? await DevelopmentStore.repairLocks({ dataRoot, apply: true })
+      : await DevelopmentStore.repairLocks({ dataRoot, apply: false });
+    return result(report.locks.some(lock => lock.stale || String(lock.action ?? '').startsWith('takeover')) ? 'complete' : 'idle', { dataRoot, ...report });
+  }
   if (name === 'init') {
     const store = await DevelopmentStore.create(input);
     const created = await store.ensureBaselineSeeds();
@@ -88,7 +95,8 @@ async function executeStage(name, input) {
     }
     const items = await store.list();
     const seeds = await store.seedCounts();
-    return result('complete', { ...rootEnvelope(store), counts: items.reduce((counts, item) => { counts[item.status] = (counts[item.status] ?? 0) + 1; return counts; }, {}), pending: await store.pendingCount(), seeds, staleClaimMs: store.config.staleClaimMs });
+    const locks = await DevelopmentStore.lockStatus({ dataRoot: store.root });
+    return result('complete', { ...rootEnvelope(store), counts: items.reduce((counts, item) => { counts[item.status] = (counts[item.status] ?? 0) + 1; return counts; }, {}), pending: await store.pendingCount(), seeds, staleClaimMs: store.config.staleClaimMs, lockTtlMs: locks.ttlMs, locks: locks.locks });
   }
   if (name === 'record-proposal') {
     const ref = absolute(input.dataRef, 'seed dataRef');

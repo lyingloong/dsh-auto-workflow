@@ -257,6 +257,8 @@ function backoffResult(item, reason) {
 }
 
 const INTENT_COMMAND = /^\s*@workflow\s+(?!merge\b|stop\b)([\s\S]+)$/i;
+const CONFIRM_COMMAND = /^\s*@workflow\s+确认按当前\s*(?:head|revision)\s*处理\s*$/i;
+const HEAD_MARKER = /\[head=([0-9a-f]{7,64})\]/i;
 function commentTime(entry) {
   return Date.parse(entry?.created_at ?? entry?.createdAt ?? '');
 }
@@ -274,15 +276,64 @@ function evidenceFor(comments = [], windowStart) {
       body: String(entry.body ?? '').slice(0, 1200),
     }));
 }
+/** Acknowledge authorized commands that target an old head or the closed window. */
+async function acknowledgePrStale(store, item, feedback) {
+  const handled = new Set(item.pr?.handledIntentIds ?? []);
+  const acknowledged = new Set((item.pr?.acknowledgedCommands ?? []).map(entry => entry.commentId));
+  const start = Date.parse(feedback.windowStart ?? '') || 0;
+  const stale = (feedback.comments ?? [])
+    .filter(entry => !handled.has(Number(entry.id)))
+    .filter(entry => !acknowledged.has(Number(entry.id)))
+    .filter(entry => AUTHORIZED_ASSOCIATIONS.has(String(entry.author_association ?? '').toUpperCase()))
+    .filter(entry => INTENT_COMMAND.test(String(entry.body ?? '')))
+    .filter(entry => {
+      if (/\[verdict=/i.test(String(entry.body ?? ''))) return false;
+      const marker = String(entry.body ?? '').match(HEAD_MARKER)?.[1]?.toLowerCase();
+      const at = commentTime(entry) || 0;
+      return (at && at < start) || (marker && !String(feedback.head).startsWith(marker));
+    })
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .slice(0, 2);
+  if (!stale.length) return item;
+  for (const entry of stale) {
+    const target = String(entry.body ?? '').match(HEAD_MARKER)?.[1]?.toLowerCase() ?? null;
+    const body = [
+      `已收到评论 #${Number(entry.id)}（授权命令），但它针对旧 head（${target ? `\`${target}\`` : '未标记 / 早于当前反馈窗口'}），当前 head 是 \`${String(feedback.head).slice(0, 12)}\`，因此没有自动应用。`,
+      `如需按当前 head 处理，请重新评论 \`@workflow <具体指令>\`，或评论 \`@workflow 确认按当前 head 处理\` 复用最近一条旧指令；不会静默应用旧命令。`,
+    ].join('\n\n');
+    await gh(store.config.repoRoot, 'pr', 'comment', String(item.pr.number), '--body', body);
+    const entryRecord = {
+      commentId: Number(entry.id), status: 'stale', head: feedback.head, currentHead: feedback.head,
+      targetHead: target, body: String(entry.body ?? '').slice(0, 2000), acknowledgedAt: new Date().toISOString(),
+    };
+    item.pr.acknowledgedCommands = [...(item.pr.acknowledgedCommands ?? []), entryRecord].slice(-100);
+    item.pr.staleCommands = [...(item.pr.staleCommands ?? []), entryRecord].slice(-5);
+  }
+  return item;
+}
 /** The newest authorized natural-language @workflow command, if any. */
 function commandFor(item, feedback) {
   const handled = new Set(item.pr?.handledIntentIds ?? []);
   const start = Date.parse(feedback.windowStart ?? '') || 0;
+  const allowed = entry => AUTHORIZED_ASSOCIATIONS.has(String(entry.author_association ?? '').toUpperCase()) && !handled.has(Number(entry.id));
+  const confirmations = (feedback.comments ?? [])
+    .filter(allowed)
+    .filter(entry => (commentTime(entry) || 0) >= start)
+    .filter(entry => CONFIRM_COMMAND.test(String(entry.body ?? '')))
+    .sort((a, b) => Number(a.id) - Number(b.id));
+  const confirmation = confirmations.at(-1);
+  if (confirmation && item.pr?.staleCommands?.length) {
+    const prior = item.pr.staleCommands.at(-1);
+    return { commentId: Number(confirmation.id), body: prior.body, author: confirmation.user?.login ?? 'unknown', at: confirmation.created_at ?? '', confirmedFrom: prior.commentId };
+  }
   const commands = (feedback.comments ?? [])
-    .filter(entry => !handled.has(Number(entry.id)))
-    .filter(entry => AUTHORIZED_ASSOCIATIONS.has(String(entry.author_association ?? '').toUpperCase()))
+    .filter(allowed)
     .filter(entry => (commentTime(entry) || 0) >= start)
     .filter(entry => INTENT_COMMAND.test(String(entry.body ?? '')) && !/\[verdict=/i.test(String(entry.body ?? '')))
+    .filter(entry => {
+      const marker = String(entry.body ?? '').match(HEAD_MARKER)?.[1]?.toLowerCase();
+      return !marker || String(feedback.head).startsWith(marker);
+    })
     .sort((a, b) => Number(a.id) - Number(b.id));
   const entry = commands.at(-1);
   if (!entry) return null;
@@ -484,6 +535,7 @@ export async function watch(store, id, claimId) {
         mergeIntent: feedback.mergeIntent, mergeSatisfied: feedback.mergeSatisfied,
         ci: feedback.ci, unresolved: feedback.unresolved, checkedAt: new Date().toISOString(),
       };
+      await acknowledgePrStale(store, item, feedback);
       const command = commandFor(item, feedback);
       if (command && feedback.verdict !== 'revise' && feedback.unresolved === 0) {
         return { item, outcome: 'interpret', pr, feedback, command, evidence: feedback.evidence, head: feedback.head, reason: 'authorized natural-language command' };
@@ -554,6 +606,7 @@ export async function merge(store, id, claimId) {
       }
       if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback: null, reason: 'PR was closed before merge' };
       let feedback = await feedbackFor(store, item, pr);
+      await acknowledgePrStale(store, item, feedback);
       const pending = commandFor(item, feedback);
       if (pending) return { item, outcome: 'waiting', pr, feedback, reason: `Natural-language command #${pending.commentId} is pending interpretation` };
       if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
@@ -576,6 +629,7 @@ export async function merge(store, id, claimId) {
       }
       if (pr.state === 'CLOSED') return { item, outcome: 'revise', pr, feedback, reason: 'PR was closed during merge verification' };
       feedback = await feedbackFor(store, item, pr);
+      await acknowledgePrStale(store, item, feedback);
       const late = commandFor(item, feedback);
       if (late) return { item, outcome: 'waiting', pr, feedback, reason: `Natural-language command #${late.commentId} arrived during merge verification` };
       if (feedback.verdict === 'revise' || feedback.unresolved > 0) {
@@ -641,7 +695,14 @@ export async function applyIntent(store, id, claimId, { action, commentId, head,
   }
   const item = await store.applyPrIntent(id, claimId, { action, commentId, head, summary, cited, error, actor });
   const number = item.pr?.number;
+  const targetHead = String(head ?? item.pr?.headRefOid ?? '').slice(0, 12);
   if (action === 'revise' && number) await setMergeLabel(store, number, false);
+  if (number && action === 'merge') {
+    await gh(store.config.repoRoot, 'pr', 'comment', String(number), '--body', `已收到合并意图（评论 #${commentId}，head \`${targetHead}\`）。CI、未解决 thread 和合并策略通过后合并；如仍需修改请重新评论。`);
+  }
+  if (number && action === 'revise') {
+    await gh(store.config.repoRoot, 'pr', 'comment', String(number), '--body', `已收到返修指令（评论 #${commentId}，head \`${targetHead}\`）。完成后会回复新的 head 和逐条处理结果。`);
+  }
   if (number && (action === 'stop' || action === 'clarify')) {
     const body = error
       ? '自动判定暂时不可用，请使用明确命令或稍后重试。'

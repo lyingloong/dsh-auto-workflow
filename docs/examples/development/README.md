@@ -106,7 +106,11 @@ $env:DSH_WORKFLOW_INPUT = '{"dataRoot":"C:/work/project-workflow-data","repoRoot
 node docs/examples/development/driver.mjs init
 ```
 
-配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR；review pass 后 PR 标记 ready，GitHub 上授权的判决（`[verdict=pass]` / 正式 APPROVE）和合并意图（默认 `@workflow merge` 评论）决定后续，不需要看板 Human token。`mergePolicy` 可为 `comment`（默认）、`auto` 或 `label`；`pr-merge` 会重新读取 PR 并用 **merge commit** 合并，squash/rebase 会报错而不是放宽绑定。外部提前 merge 仍会被 `pr-watch` 发现、验证并清理。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback（仍用看板 Human），不要在正常开发中混用。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 为 `version: 4`（decision-first 字段 + GitHub merge policy），不等于包版本；旧 v3 库会拒绝读取，先运行 `driver migrate`（默认 dry-run）显式升级，保留审计字段。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。`maxMiningSeeds`（默认 `3`）是在挖 seed 的 store 级硬上限；`staleClaimMs`（默认 `1800000`）既是 `status` 报告过期 claim 的阈值，也是 `recover-seeds` 的默认门槛，运行时不自动回收。
+配置一经初始化不可静默更换。`integrationMode:"pull-request"` 是新默认：每个需求 push 到 `auto/req-*` 分支并创建自己的 draft PR；review pass 后 PR 标记 ready，GitHub 上授权的判决（`[verdict=pass]` / 正式 APPROVE）和合并意图（默认 `@workflow merge` 评论）决定后续，不需要看板 Human token。`mergePolicy` 可为 `comment`（默认）、`auto` 或 `label`；`pr-merge` 会重新读取 PR 并用 **merge commit** 合并，squash/rebase 会报错而不是放宽绑定。外部提前 merge 仍会被 `pr-watch` 发现、验证并清理。`lockTtlMs`（默认 `120000`）是 store/integration 锁的接管 TTL；锁持有期间会定期心跳，进程被硬杀后新进程会在 TTL 后自动接管旧锁，不必手工移动 `locks/*.lock`。`integrationMode:"local"` 只保留给无 GitHub 的显式本地 fallback（仍用看板 Human），不要在正常开发中混用。
+
+### 锁、心跳与恢复
+
+store/integration 锁不是纯 `mkdir` 等待：`owner.json` 记录随机 owner token、pid、host、runId/tokenId 和获取/更新时间；持有期间定期写心跳。TTL 到期且心跳停止的锁会被原子 rename 到 `locks/.stale/`，并在 `locks/events.log` 追加审计记录，然后继续执行；活锁只返回带 owner 摘要的有界 `BusinessBusy`，不会误删。释放前校验 owner token，旧 owner 不会删掉已接管的新锁；正常退出会 best-effort 释放自有锁，hard kill 由 TTL 接管。`driver locks` 默认只读报告（`apply:true` 才清理 stale）；`driver status` 也会返回锁状态。`after-verified-merge` 验证 PR 合并后自动删除 worktree，包括开发期 ignored/untracked 临时文件；批准 commit、artifact/review、PR 和 `cleanedWorktreePath` 保留。业务 store 为 `version: 4`（decision-first 字段 + GitHub merge policy），不等于包版本；旧 v3 库会拒绝读取，先运行 `driver migrate`（默认 dry-run）显式升级，保留审计字段。`init` 同时写入 docs/refactor/page/chore/tests/security 等 baseline discovery seeds；它们是发现方向，不是证据。`maxMiningSeeds`（默认 `3`）是在挖 seed 的 store 级硬上限；`staleClaimMs`（默认 `1800000`）既是 `status` 报告过期 claim 的阈值，也是 `recover-seeds` 的默认门槛，运行时不自动回收。
 
 ### 用户 intake
 
@@ -205,6 +209,7 @@ node docs/examples/development/driver.mjs rearm-seed
 - 标签：`workflow:requirement-review` 待审，决定后换成 `workflow:requirement-approved` 或 `workflow:requirement-rejected`。`pr-init` 的 `apply:true` 会创建这三个标签；标签缺失时流程会明确失败。
 - 决定写在评论里：`@workflow approve` 或 `@workflow reject <理由>`。只有仓库协作者（OWNER / MEMBER / COLLABORATOR）的评论生效；拒绝必须带理由，否则工作流回一条评论要求补充并继续等待。
 - **自然语言命令**：协作者也可以写一条 `@workflow <自然语言>`（例如 `@workflow 按 Codex 的两条 P2 修一下`、`@workflow 可以了`、`@workflow 先别动`）。`check-requirement-issue` 只把**协作者**的 `@workflow` 评论交给低思考 `requirement-intent` agent；它读取这条命令、当前 revision、最近评论（Codex 评论只是**证据**，不能当指令）并输出 approve / revise / stop / clarify。模糊、矛盾或不安全的命令只回一条澄清评论，不改状态；意图 agent 不可用时也回澄清并继续等待。`revise` 会生成引用评论 id 的 `revisionBrief`，`analyst-revise` 按条处理；新 revision 发布后只通知一次"请检查"。精确命令始终可用，且与自然语言命令一样按 revision 绑定、按评论 id 去重。
+- **旧指令回执**：早于当前 revision 窗口的授权自然语言命令不会被静默忽略；`check-requirement-issue` 会回一条说明目标/当前 revision、未自动应用的回执（每个评论 id 只回一次），并在回执里给出 `@workflow 确认按当前 revision 处理` 的显式复用方式；不会自动应用旧命令。
 - 发布时间点后立即首查，之后由 `requirement-gate` 每 **30 分钟**复查一次；`check-requirement-issue` 把最新一条有效评论按 `revision` 绑定写入 `requirementApproval`（actor 记为 `github:<login>`）。
 - **公开内容先脱敏**：发布前确定性替换绝对路径、用户主目录、邮箱、长令牌和私有地址；issue 顶部注明"公开版已脱敏，执行以本地记录为准"。本地需求原文不变。
 - 需要 `gh` 认证和仓库访问；issue 创建/更新失败会让该 packet 失败并保留 `requirement-pending` 状态供检查。
@@ -307,6 +312,7 @@ Human 引擎决定（本地 merge）由后续 command 转成业务记录；需�
 - `revise`：生成引用评论 id 的 `reworkBrief`，清除 approval 并回到同一分支/worktree/PR 的 `begin-engineering`；engineer 在 snapshot 中返回逐条 `rework`（resolved / partial / unresolved），新 head 发布后只通知一次"请检查"和逐条映射。
 - `stop` / `clarify`：保持当前状态，只回一条中文确认或澄清；同一评论 id 不会重复处理。
 - 非协作者或 workflow 自己的评论、窗口外的旧评论不会被当作命令；精确 `@workflow merge` / `stop` 和 verdict 标记仍然是确定性路径。
+- 旧 head 的授权命令不会被静默忽略：`pr-watch` 回一条"针对旧 head、没有自动应用"的回执（每个评论 id 一次），并可用 `@workflow 确认按当前 head 处理` 显式复用最近一条旧指令；不会自动应用旧命令。
 
 ### 瞬态失败与退避
 
@@ -386,7 +392,8 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 
 | Stage | 额外输入 / 主要行为 |
 | --- | --- |
-| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`mergePolicy`（默认 `comment`，或 `auto`/`label`）、`maxMiningSeeds`（默认 3）、`staleClaimMs`（默认 30 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
+| `init` | `dataRoot`、`repoRoot`，可选 `baseBranch`、`cleanupPolicy`（默认 `after-verified-merge`）、`integrationMode`（默认 `pull-request`，或 `local` fallback）、`prRemote`（默认 `origin`）、`mergePolicy`（默认 `comment`，或 `auto`/`label`）、`lockTtlMs`（默认 120 秒）、`maxMiningSeeds`（默认 3）、`staleClaimMs`（默认 30 分钟）；初始化固定配置并写入 baseline discovery seeds。 |
+| `locks` | `{dataRoot}` 只读报告 store/integration 锁的 owner/age/stale；`apply:true` 把 stale 锁备份到 `locks/.stale/` 并写审计日志。 |
 | `pr-init` | 创建 workflow 前的 PR 契约检查；输入 `repoRoot`、`baseBranch`，`apply:true` 只创建 label 和缺失的 PR template，不改 branch protection/merge method；`manualGate:true` 把 branch protection 相关检查降为警告，认证/仓库访问/merge commit 仍是硬性要求。 |
 | `requirement` / `seed` | `dataRoot` 与 `requirement` / `seed` 对象；显式 intake。seed 可带 `origin`、`category`、`relatedRequirementId`；可选，不强制。 |
 | `claim` | `dataRoot`、可选 `batchSize` 1..100（图为 3）；领需求，返回 ready items 或 idle。 |
@@ -420,7 +427,7 @@ item envelope 至少携带业务 `dataRef` / `claimId`，按阶段携带冻结�
 | `recover-integration` | 仅异常兜底：操作者已手工恢复 Git 后，`decision:resolved\|aborted`、note；不在主图。 |
 | `cleanup` | 默认 `after-verified-merge` 自动强删已合并 worktree，并删除本地需求分支；`retain` 是显式例外。 |
 | `migrate` | v3 store 显式升级到 v4；默认 dry-run，`apply:true` 才写盘。 |
-| `status` / `inspect` | `{dataRoot}` / item envelope；有界业务状态与引用。 |
+| `status` / `inspect` | `{dataRoot}` / item envelope；有界业务状态与引用，status 同时报告锁状态。 |
 
 ## 验证与限制
 

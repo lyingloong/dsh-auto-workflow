@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 示例 store/integration 锁改为自描述、自愈：owner.json 记录 token/pid/host/runId/tokenId 与获取/更新时间，持有期间心跳；TTL 到期且心跳停止的锁原子备份到 `locks/.stale/` 并写 `locks/events.log`，活锁只返回带 owner 摘要的有界 `BusinessBusy`；释放校验 owner token，旧 owner 不会删除新锁；新增 `driver locks` 只读检查/显式清理和 `status` 锁报告；command 节点获得 `DSH_WORKFLOW_RUN_ID`/`TOKEN_ID`/`PACKET_ID` 环境变量用于锁审计。（#36）
+- 旧 head/revision 的授权 `@workflow` 命令不再被静默忽略：issue/PR watcher 回一条“目标/当前值 + 未自动应用”的回执（按评论 id 去重），并支持 `@workflow 确认按当前 head/revision 处理` 显式复用最近一条旧指令；不会自动应用旧命令。（#37）
+
 - 需求 issue 与 PR 支持协作者自然语言 `@workflow` 命令：低思考 intent agent 只把授权命令当指令，最近评论（Codex 等）只作证据，输出 approve/revise/stop/clarify 或 merge/revise/stop/clarify；修订/返修生成引用评论 id 的 brief，新 revision/head 只通知一次“请检查”并附逐条 resolved/unresolved 映射；模糊或意图失败回澄清，精确命令仍是 fallback。agent 节点新增可选 `fallbackOutcome`，让意图模型失败走业务澄清而不是失败 packet。（#35）
 
 - 看板节点图新增**极简**视图：只保留 agent 与关键 gate 节点，隐藏节点路径压缩为直接边，busy 重试门和 human/command 节点不显示；按钮按 完整 → 简化 → 极简 循环。

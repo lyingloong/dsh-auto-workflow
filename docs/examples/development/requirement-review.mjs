@@ -14,6 +14,7 @@ export const REQUIREMENT_LABELS = [REVIEW_LABEL, APPROVED_LABEL, REJECTED_LABEL]
 const AUTHORIZED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 const DECISION = /^\s*@workflow\s+(approve|reject)\b([\s\S]*)$/i;
 const INTENT_COMMAND = /^\s*@workflow\s+(?!approve\b|reject\b)([\s\S]+)$/i;
+const CONFIRM_COMMAND = /^\s*@workflow\s+确认按当前\s*(?:revision|head)\s*处理\s*$/i;
 function commentTime(comment) { return Date.parse(comment?.created_at ?? comment?.createdAt ?? '') || 0; }
 function evidenceFor(comments, floor) {
   return comments
@@ -26,6 +27,32 @@ function evidenceFor(comments, floor) {
       role: /\[role=codex\]/i.test(String(comment.body ?? '')) ? 'codex' : null,
       body: String(comment.body ?? '').slice(0, 1200),
     }));
+}
+/** Acknowledge authorized commands that fell out of the current revision window. */
+async function acknowledgeStale(store, item, comments, claimId) {
+  const floor = Number(item.github.commentFloor ?? 0);
+  const acknowledged = new Set((item.acknowledgedCommands ?? []).map(entry => entry.commentId));
+  const stale = comments
+    .filter(comment => Number(comment.id) <= floor)
+    .filter(comment => AUTHORIZED.has(String(comment.author_association ?? '').toUpperCase()))
+    .filter(comment => INTENT_COMMAND.test(String(comment.body ?? '')))
+    .filter(comment => !acknowledged.has(Number(comment.id)))
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .slice(0, 2);
+  if (!stale.length) return item;
+  const replies = [];
+  for (const comment of stale) {
+    const body = [
+      `已收到评论 #${Number(comment.id)}（授权命令），但它早于当前 revision 审批窗口，未自动应用。`,
+      `当前需求 revision 为 ${item.revision}（${item.status}）。如需按当前 revision 处理，请重新评论 \`@workflow <具体指令>\`，或评论 \`@workflow 确认按当前 revision 处理\` 复用最近一条旧指令；不会静默应用旧命令。`,
+    ].join('\n\n');
+    await gh(store.config.repoRoot, 'issue', 'comment', String(item.github.number), '--body', body);
+    replies.push({
+      commentId: Number(comment.id), status: 'stale', revision: item.revision, currentRevision: item.revision,
+      body: String(comment.body ?? '').slice(0, 2000), acknowledgedAt: new Date().toISOString(),
+    });
+  }
+  return store.recordRequirementAcks(item.id, claimId, { acknowledged: replies, stale: replies });
 }
 
 /** Deterministic public redaction: paths, emails, tokens, private addresses. */
@@ -151,7 +178,7 @@ export async function publish(store, id, claimId) {
 
 /** Read the latest authorized decision comment and apply it to the requirement. */
 export async function check(store, id, claimId) {
-  const item = await store.get(id);
+  let item = await store.get(id);
   if (item.status === 'ready') return { item, outcome: 'approved' };
   if (item.status === 'requirement-revision') return { item, outcome: 'rejected' };
   if (item.status !== 'requirement-pending') throw new Error('Requirement is not pending review');
@@ -160,6 +187,7 @@ export async function check(store, id, claimId) {
   const { owner, name } = await repoCoordinates(store);
   const cwd = store.config.repoRoot, number = item.github.number;
   const comments = await listComments(cwd, { owner, name }, number);
+  item = await acknowledgeStale(store, item, comments, claimId);
   const decisions = comments
     .filter(comment => Number(comment.id) > Number(item.github.commentFloor ?? 0))
     .filter(comment => AUTHORIZED.has(String(comment.author_association ?? '').toUpperCase()))
@@ -167,6 +195,25 @@ export async function check(store, id, claimId) {
     .filter(entry => entry.match)
     .sort((a, b) => Number(a.comment.id) - Number(b.comment.id));
   if (decisions.length === 0) {
+    // Explicit confirmation of a previously acknowledged stale command reuses
+    // that command's text against the current revision; it never applies silently.
+    const floor = Number(item.github.commentFloor ?? 0);
+    const confirmations = comments
+      .filter(comment => Number(comment.id) > floor)
+      .filter(comment => AUTHORIZED.has(String(comment.author_association ?? '').toUpperCase()))
+      .filter(comment => CONFIRM_COMMAND.test(String(comment.body ?? '')))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    const confirmation = confirmations.at(-1);
+    if (confirmation && item.staleCommands?.length) {
+      const prior = item.staleCommands.at(-1);
+      return {
+        item,
+        outcome: 'interpret',
+        revision: item.revision,
+        command: { commentId: Number(confirmation.id), body: prior.body, author: confirmation.user?.login ?? 'unknown', confirmedFrom: prior.commentId },
+        evidence: evidenceFor(comments, floor),
+      };
+    }
     // No exact command: hand one authorized natural-language command to the
     // intent step. Only the command is an instruction; evidence stays data.
     const commands = comments
@@ -181,7 +228,7 @@ export async function check(store, id, claimId) {
         outcome: 'interpret',
         revision: item.revision,
         command: { commentId: Number(entry.id), body: String(entry.body ?? '').trim().slice(0, 2000), author: entry.user?.login ?? 'unknown' },
-        evidence: evidenceFor(comments, Number(item.github.commentFloor ?? 0)),
+        evidence: evidenceFor(comments, floor),
       };
     }
     return { item, outcome: 'waiting', reason: 'no-decision' };

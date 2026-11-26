@@ -1392,3 +1392,76 @@ test('unauthorized or stale PR instructions never trigger the intent step', asyn
   assert.equal((await store.get(item.id)).pr.intent ?? null, null);
   assert.equal((await store.get(item.id)).status, 'human-pending');
 });
+
+
+test('stale requirement commands are acknowledged once and can be explicitly confirmed', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { envelope, item } = await pendingReview(base.store);
+  await cli('publish-requirement-issue', envelope);
+  const number = (await base.store.get(item.id)).github.number;
+  await issueComment(state, number, '@workflow 先按旧方案改');
+  // Republishing at the same revision advances the comment floor, making the
+  // earlier command stale without applying it.
+  await cli('publish-requirement-issue', envelope);
+  const checked = await cli('check-requirement-issue', envelope);
+  assert.equal(checked.outcome, 'waiting');
+  let fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.ok(fake.issues[0].comments.some(comment => comment.body.includes('未自动应用')));
+  let current = await base.store.get(item.id);
+  assert.equal(current.acknowledgedCommands.length, 1);
+  assert.equal(current.staleCommands.length, 1);
+  const count = fake.issues[0].comments.length;
+  await cli('check-requirement-issue', envelope);
+  fake = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(fake.issues[0].comments.length, count, 'a stale command is acknowledged once');
+  // An explicit confirmation reuses the old command text against the current revision.
+  await issueComment(state, number, '@workflow 确认按当前 revision 处理');
+  const confirmed = await cli('check-requirement-issue', envelope);
+  assert.equal(confirmed.outcome, 'interpret');
+  assert.equal(confirmed.output.command.body, '@workflow 先按旧方案改');
+  assert.equal(confirmed.output.command.confirmedFrom, current.staleCommands[0].commentId);
+  const applied = await cli('requirement-intent-apply', {
+    dataRef: envelope.dataRef, claimId: envelope.claimId, action: 'revise',
+    revision: confirmed.output.revision, commentId: confirmed.output.command.commentId,
+    summary: '按旧指令修订', cited: [], actor: 'maintainer',
+  });
+  assert.equal(applied.outcome, 'revision');
+  current = await base.store.get(item.id);
+  assert.equal(current.status, 'requirement-revision');
+  assert.equal(current.revisionBrief.summary, '按旧指令修订');
+});
+
+test('stale PR commands are acknowledged once, ignore unauthorized authors and can be confirmed', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await addPrComment(prState, { body: '@workflow 先按旧方案改 [head=deadbeef]', login: 'outsider', association: 'NONE' });
+  await addPrComment(prState, { body: '@workflow 先按旧方案改 [head=deadbeef]' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'waiting');
+  let fake = JSON.parse(await readFile(prState, 'utf8'));
+  let current = await store.get(item.id);
+  const acks = fake.prs[0].comments.filter(comment => comment.body.includes('没有自动应用'));
+  assert.equal(acks.length, 1, 'only the authorized stale command is acknowledged');
+  assert.match(acks[0].body, /当前 head/);
+  assert.match(acks[0].body, /deadbeef/);
+  assert.equal(current.pr.acknowledgedCommands.length, 1);
+  assert.equal(current.pr.staleCommands.length, 1);
+  const count = fake.prs[0].comments.length;
+  await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  fake = JSON.parse(await readFile(prState, 'utf8'));
+  assert.equal(fake.prs[0].comments.length, count, 'a stale PR command is acknowledged once');
+  await addPrComment(prState, { body: '@workflow 确认按当前 head 处理' });
+  const confirmed = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(confirmed.outcome, 'interpret');
+  assert.equal(confirmed.output.command.body, '@workflow 先按旧方案改 [head=deadbeef]');
+  assert.equal(confirmed.output.command.confirmedFrom, current.pr.staleCommands[0].commentId);
+  const applied = await cli('pr-intent-apply', {
+    dataRef: store.ref(item.id), claimId: item.claimId, action: 'revise',
+    commentId: confirmed.output.command.commentId, head: confirmed.output.head,
+    summary: '按旧指令返修', cited: [], actor: 'maintainer',
+  });
+  assert.equal(applied.outcome, 'revise');
+  current = await store.get(item.id);
+  assert.equal(current.status, 'engineering-ready');
+  assert.equal(current.pr.reworkBrief.summary, '按旧指令返修');
+});

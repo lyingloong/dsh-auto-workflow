@@ -12,6 +12,7 @@ import './host-contract.test.mjs';
 import './pr-feedback.test.mjs';
 import './github-retry.test.mjs';
 import './board-minimal.test.mjs';
+import './store-locks.test.mjs';
 import './v3-recovery.test.mjs';
 import './v3-plugin.test.mjs';
 import './v3-web-api.test.mjs';

@@ -84,7 +84,7 @@ agent 节点会请求宿主的结构化输出契约：当 provider 声明 `outpu
 
 ### JSON command 协议
 
-`config.json: true` 把已解析节点输入作为 JSON 放入环境变量 `DSH_WORKFLOW_INPUT`。脚本应向 stdout 输出一个结果对象：
+`config.json: true` 把已解析节点输入作为 JSON 放入环境变量 `DSH_WORKFLOW_INPUT`，并附带 `DSH_WORKFLOW_RUN_ID`、`DSH_WORKFLOW_TOKEN_ID`、`DSH_WORKFLOW_PACKET_ID` 供脚本审计/诊断（示例用于锁 owner 元数据）。脚本应向 stdout 输出一个结果对象：
 
 ```json
 {

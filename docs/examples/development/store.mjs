@@ -1,7 +1,9 @@
 /** Workflow-owned business storage. The generic plugin never imports this module. */
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, readdir, lstat, realpath, rm } from 'node:fs/promises';
+import { hostname } from 'node:os';
+import { readFileSync, rmSync } from 'node:fs';
+import { mkdir, readFile, writeFile, rename, readdir, lstat, realpath, rm, stat, appendFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const directories = ['requirements', 'seeds', 'artifacts', 'reviews', 'worktrees', 'locks'];
@@ -9,6 +11,7 @@ const pendingStatuses = new Set(['queued', 'planning', 'intake', 'requirement-pe
 const storeVersion = 4;
 const defaultMaxMiningSeeds = 3;
 const defaultStaleClaimMs = 1_800_000;
+const defaultLockTtlMs = 120_000;
 const mergePolicies = ['comment', 'auto', 'label'];
 
 /** Baseline discovery directions; actual requirements are still model-proposed. */
@@ -30,7 +33,17 @@ export const baselineSeeds = Object.freeze([
 ]);
 /** Only lock admission can emit this: the protected action has NOT started. */
 export class BusinessBusy extends Error {
-  constructor(lock) { super(`Business ${lock} lock busy; action not started`); this.code = 'business_busy'; this.lock = lock; }
+  constructor(lock, info = null) {
+    const owner = info?.owner;
+    const detail = owner
+      ? `owner pid ${owner.pid ?? '?'} host ${owner.host ?? '?'} age ${Math.round(info.ageMs ?? 0)}ms`
+      : 'owner unknown';
+    super(`Business ${lock} lock busy (${detail}); action not started`);
+    this.code = 'business_busy';
+    this.lock = lock;
+    this.owner = owner ?? null;
+    this.ageMs = info?.ageMs ?? null;
+  }
 }
 export const requirementId = value => safeId(value, 'req');
 export const seedId = value => safeId(value, 'seed');
@@ -89,13 +102,14 @@ function newSeedRecord({ id, title, evidence, tags, origin, category, relatedReq
 
 export class DevelopmentStore {
   constructor(config) { this.config = config; this.root = config.dataRoot; }
-  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'pull-request', prRemote = 'origin', mergePolicy = 'comment', maxMiningSeeds = defaultMaxMiningSeeds, staleClaimMs = defaultStaleClaimMs }) {
+  static async create({ dataRoot, repoRoot, baseBranch = 'main', cleanupPolicy = 'after-verified-merge', integrationMode = 'pull-request', prRemote = 'origin', mergePolicy = 'comment', lockTtlMs = defaultLockTtlMs, maxMiningSeeds = defaultMaxMiningSeeds, staleClaimMs = defaultStaleClaimMs }) {
     dataRoot = absolute(dataRoot, 'dataRoot'); repoRoot = await realpath(absolute(repoRoot, 'repoRoot'));
     if (!['retain', 'after-verified-merge'].includes(cleanupPolicy)) throw new Error('Invalid cleanup policy');
     if (!['local', 'pull-request'].includes(integrationMode)) throw new Error('Invalid integration mode');
     if (!mergePolicies.includes(mergePolicy)) throw new Error('Invalid merge policy');
     if (!Number.isInteger(maxMiningSeeds) || maxMiningSeeds < 1 || maxMiningSeeds > 100) throw new Error('Invalid max mining seeds');
     if (!Number.isInteger(staleClaimMs) || staleClaimMs < 60_000 || staleClaimMs > 604_800_000) throw new Error('Invalid stale claim age');
+    if (!Number.isInteger(lockTtlMs) || lockTtlMs < 5_000 || lockTtlMs > 3_600_000) throw new Error('Invalid lock TTL');
     if (typeof prRemote !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(prRemote)) throw new Error('Invalid PR remote');
     if (typeof baseBranch !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(baseBranch) || baseBranch.includes('..') || baseBranch.endsWith('/') || baseBranch.endsWith('.lock')) throw new Error('Unsafe base branch');
     await mkdir(dataRoot, { recursive: true });
@@ -103,11 +117,11 @@ export class DevelopmentStore {
     const existing = await optionalJSON(path.join(dataRoot, 'config.json'));
     if (existing) {
       if (existing.version !== storeVersion) throw new Error(`Unsupported business store version ${existing.version}; run the migrate stage or create a new dataRoot`);
-      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode || (existing.prRemote ?? 'origin') !== prRemote || (existing.mergePolicy ?? 'comment') !== mergePolicy || existing.maxMiningSeeds !== maxMiningSeeds || existing.staleClaimMs !== staleClaimMs) throw new Error('Store configuration is immutable');
+      if (existing.repoRoot !== repoRoot || existing.baseBranch !== baseBranch || existing.cleanupPolicy !== cleanupPolicy || (existing.integrationMode ?? 'local') !== integrationMode || (existing.prRemote ?? 'origin') !== prRemote || (existing.mergePolicy ?? 'comment') !== mergePolicy || (existing.lockTtlMs ?? defaultLockTtlMs) !== lockTtlMs || existing.maxMiningSeeds !== maxMiningSeeds || existing.staleClaimMs !== staleClaimMs) throw new Error('Store configuration is immutable');
       return DevelopmentStore.open(dataRoot);
     }
     for (const name of directories) await mkdir(path.join(dataRoot, name));
-    const config = { version: storeVersion, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode, prRemote, mergePolicy, maxMiningSeeds, staleClaimMs };
+    const config = { version: storeVersion, dataRoot, repoRoot, baseBranch, cleanupPolicy, integrationMode, prRemote, mergePolicy, lockTtlMs, maxMiningSeeds, staleClaimMs };
     await atomicJSON(path.join(dataRoot, 'config.json'), config);
     return new DevelopmentStore(config);
   }
@@ -117,6 +131,8 @@ export class DevelopmentStore {
     // Decision-first requirement fields and the GitHub merge policy changed the
     // record shape. Old roots are evidence; migrate explicitly, never in place.
     if (config.version !== storeVersion) throw new Error(`Unsupported business store version ${config.version}; run the migrate stage or create a new dataRoot`);
+    if (config.lockTtlMs === undefined) config.lockTtlMs = defaultLockTtlMs;
+    if (!Number.isInteger(config.lockTtlMs) || config.lockTtlMs < 5_000 || config.lockTtlMs > 3_600_000) throw new Error('Invalid lock TTL; run the migrate stage');
     if (config.dataRoot !== dataRoot || path.resolve(await realpath(dataRoot)) !== dataRoot || (await lstat(dataRoot)).isSymbolicLink()) throw new Error('Invalid business store root');
     for (const name of directories) if ((await lstat(path.join(dataRoot, name))).isSymbolicLink()) throw new Error('Business directories cannot be symlinks');
     absolute(config.repoRoot, 'repoRoot');
@@ -154,7 +170,7 @@ export class DevelopmentStore {
     }
     if (apply) {
       for (const entry of requirements) await atomicJSON(entry.file, entry.record);
-      const next = { ...config, version: storeVersion, mergePolicy: config.mergePolicy ?? 'comment' };
+      const next = { ...config, version: storeVersion, mergePolicy: config.mergePolicy ?? 'comment', lockTtlMs: config.lockTtlMs ?? defaultLockTtlMs };
       delete next.selfMergeAfterMs;
       await atomicJSON(path.join(dataRoot, 'config.json'), next);
     }
@@ -189,19 +205,115 @@ export class DevelopmentStore {
     requirementId(item.id); item.updatedAt = new Date().toISOString();
     await atomicJSON(await this.checkedFile(this.ref(item.id)), item); return item;
   }
-  async locked(action, name = 'store', { timeoutMs = 10_000 } = {}) {
+  async locked(action, name = 'store', { timeoutMs = 10_000, ttlMs = this.config.lockTtlMs ?? defaultLockTtlMs } = {}) {
     if (!['store', 'integration'].includes(name)) throw new Error('Invalid lock');
-    const lock = path.join(this.root, 'locks', `${name}.lock`), started = Date.now();
+    const lock = path.join(this.root, 'locks', `${name}.lock`);
+    const started = Date.now();
     for (;;) {
       try { await mkdir(lock); break; }
       catch (error) {
         if (error.code !== 'EEXIST') throw error;
-        if (Date.now() - started >= timeoutMs) throw new BusinessBusy(name);
-        await delay(10);
+        const info = await lockInfo(lock);
+        if (isStaleLock(info, ttlMs)) {
+          const taken = await this.takeoverLock(lock, name, info);
+          if (taken) {
+            try { await mkdir(lock); break; }
+            catch (retry) { if (retry.code !== 'EEXIST') throw retry; }
+          }
+        }
+        if (Date.now() - started >= timeoutMs) throw new BusinessBusy(name, info);
+        await delay(10 + Math.floor(Math.random() * 20));
       }
     }
-    try { await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })); return await action(); }
-    finally { await rm(lock, { recursive: true }); }
+    const owner = {
+      token: randomUUID(), pid: process.pid, host: hostname(), lock: name,
+      acquiredAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      runId: process.env.DSH_WORKFLOW_RUN_ID ?? null,
+      tokenId: process.env.DSH_WORKFLOW_TOKEN_ID ?? null,
+      packetId: process.env.DSH_WORKFLOW_PACKET_ID ?? null,
+    };
+    const ownerPath = path.join(lock, 'owner.json');
+    try {
+      await writeFile(ownerPath, JSON.stringify(owner));
+    } catch (error) {
+      await rm(lock, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+    registerHeldLock(lock, owner.token);
+    const heartbeat = setInterval(() => { touchLock(ownerPath, owner.token).catch(() => {}); }, Math.max(1_000, Math.floor(ttlMs / 3)));
+    heartbeat.unref?.();
+    try {
+      return await action();
+    } finally {
+      clearInterval(heartbeat);
+      unregisterHeldLock(lock, owner.token);
+      const released = await releaseLock(lock, owner.token);
+      if (released === 'skipped') await this.logLockEvent({ event: 'release-skipped', lock: name, reason: 'owner-changed' });
+    }
+  }
+  /** Move one demonstrably stale lock aside; live owners are never removed. */
+  async takeoverLock(lock, name, info) {
+    const staleDir = path.join(this.root, 'locks', '.stale');
+    await mkdir(staleDir, { recursive: true });
+    const backup = path.join(staleDir, `${name}-${Date.now()}-${randomUUID().slice(0, 8)}.lock`);
+    try {
+      await rename(lock, backup);
+    } catch (error) {
+      // A concurrent takeover won the rename, or an open handle blocks it on
+      // Windows; both are retryable contention, not corruption.
+      if (['ENOENT', 'EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) return false;
+      throw error;
+    }
+    await this.logLockEvent({
+      event: 'takeover',
+      lock: name,
+      backup: path.basename(backup),
+      owner: info.owner ? { pid: info.owner.pid ?? null, host: info.owner.host ?? null, runId: info.owner.runId ?? null, tokenId: info.owner.tokenId ?? null } : null,
+      ageMs: Number.isFinite(info.ageMs) ? Math.round(info.ageMs) : null,
+      reason: info.owner ? 'ttl-expired' : 'missing-owner',
+    });
+    return true;
+  }
+  async logLockEvent(event) {
+    try { await appendFile(path.join(this.root, 'locks', 'events.log'), JSON.stringify({ at: new Date().toISOString(), ...event }) + '\n'); }
+    catch { /* audit logging is advisory; never mask the lock outcome */ }
+  }
+  /** Inspect store/integration locks without mutating them. */
+  static async lockStatus({ dataRoot, ttlMs = defaultLockTtlMs } = {}) {
+    dataRoot = absolute(dataRoot, 'dataRoot');
+    const config = await optionalJSON(path.join(dataRoot, 'config.json'));
+    const ttl = config?.lockTtlMs ?? ttlMs;
+    const locks = [];
+    for (const name of ['store', 'integration']) {
+      const info = await lockInfo(path.join(dataRoot, 'locks', `${name}.lock`));
+      locks.push({
+        name,
+        owner: info.owner ? {
+          pid: info.owner.pid ?? null, host: info.owner.host ?? null,
+          runId: info.owner.runId ?? null, tokenId: info.owner.tokenId ?? null,
+          acquiredAt: info.owner.acquiredAt ?? null, updatedAt: info.owner.updatedAt ?? null,
+        } : null,
+        ageMs: Number.isFinite(info.ageMs) ? Math.round(info.ageMs) : null,
+        stale: isStaleLock(info, ttl),
+      });
+    }
+    return { ttlMs: ttl, locks };
+  }
+  /** Explicit preflight: report stale locks, and move them aside only with apply. */
+  static async repairLocks({ dataRoot, apply = false } = {}) {
+    const status = await DevelopmentStore.lockStatus({ dataRoot });
+    const actions = [];
+    for (const lock of status.locks) {
+      if (!lock.stale) continue;
+      const action = { ...lock, action: apply ? 'takeover' : 'would-takeover' };
+      if (apply) {
+        const store = new DevelopmentStore({ dataRoot: absolute(dataRoot, 'dataRoot'), lockTtlMs: status.ttlMs });
+        const info = await lockInfo(path.join(store.root, 'locks', `${lock.name}.lock`));
+        action.action = await store.takeoverLock(path.join(store.root, 'locks', `${lock.name}.lock`), lock.name, info) ? 'takeover' : 'takeover-failed';
+      }
+      actions.push(action);
+    }
+    return { ttlMs: status.ttlMs, apply, locks: actions };
   }
   async list() {
     const names = (await readdir(path.join(this.root, 'requirements'))).filter(name => /^req-[a-z0-9][a-z0-9_-]{0,63}\.json$/.test(name));
@@ -609,6 +721,7 @@ export class DevelopmentStore {
       const actorText = actor ? text(actor, 'intent actor', 200) : 'github:intent';
       const noteText = summary ? text(summary, 'intent summary', 1000) : error ? text(error, 'intent error', 500) : '';
       item.intent = { action, commentId: idNumber, revision: item.revision, summary: noteText, cited: items, actor: actorText, at: new Date().toISOString() };
+      item.acknowledgedCommands = [...(item.acknowledgedCommands ?? []), { commentId: idNumber, status: 'applied', action, revision: item.revision, at: new Date().toISOString() }].slice(-100);
       if (action === 'approve') {
         item.requirementApproval = { decision: 'approve', revision: item.revision, actor: actorText, reason: noteText || 'natural-language approval', commentId: idNumber };
         item.status = 'ready';
@@ -645,6 +758,7 @@ export class DevelopmentStore {
       const noteText = summary ? text(summary, 'intent summary', 1000) : error ? text(error, 'intent error', 500) : '';
       item.pr.intent = { action, commentId: idNumber, head, summary: noteText, cited: items, actor: actorText, at: new Date().toISOString() };
       item.pr.handledIntentIds = [...handled, idNumber];
+      item.pr.acknowledgedCommands = [...(item.pr.acknowledgedCommands ?? []), { commentId: idNumber, status: 'applied', action, head, at: new Date().toISOString() }].slice(-100);
       if (action === 'merge') {
         item.pr.mergeIntent = { commentId: idNumber, actor: actorText, head, summary: noteText, at: new Date().toISOString() };
       } else if (action === 'revise') {
@@ -653,6 +767,16 @@ export class DevelopmentStore {
         item.status = 'engineering-ready';
         item.feedback.push({ scope: 'pr', key: `intent:${idNumber}`, head, decision: 'revise', actor: actorText, note: item.pr.reworkBrief.summary, cited: items.map(entry => entry.commentId), at: new Date().toISOString() });
       }
+      return item;
+    });
+  }
+  /** Record stale-command acknowledgements; applied ids are recorded by apply*. */
+  async recordRequirementAcks(id, claimId, { acknowledged = [], stale = [] } = {}) {
+    return this.mutate(id, claimId, item => {
+      const known = new Set((item.acknowledgedCommands ?? []).map(entry => entry.commentId));
+      const added = acknowledged.filter(entry => !known.has(entry.commentId));
+      if (added.length) item.acknowledgedCommands = [...(item.acknowledgedCommands ?? []), ...added].slice(-100);
+      if (stale.length) item.staleCommands = [...(item.staleCommands ?? []), ...stale].slice(-5);
       return item;
     });
   }
@@ -682,6 +806,62 @@ export class DevelopmentStore {
   }
 }
 export function assertClaim(item, claimId) { if (!claimId || claimId !== item.claimId) throw new Error('Stale/missing requirement claim'); }
+const heldLocks = new Map();
+let exitHookInstalled = false;
+/** A hard kill cannot run this; TTL takeover covers that case. */
+function registerHeldLock(lock, token) {
+  heldLocks.set(lock, token);
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.on('exit', () => {
+    for (const [file, heldToken] of heldLocks) {
+      try {
+        const owner = JSON.parse(readFileSync(path.join(file, 'owner.json'), 'utf8'));
+        if (owner.token === heldToken) rmSync(file, { recursive: true, force: true });
+      } catch { /* already released or taken over */ }
+    }
+  });
+}
+function unregisterHeldLock(lock, token) {
+  if (heldLocks.get(lock) === token) heldLocks.delete(lock);
+}
+async function lockInfo(lock) {
+  const info = { owner: null, ageMs: Number.POSITIVE_INFINITY, missing: false };
+  let mtimeMs;
+  try { mtimeMs = (await stat(lock)).mtimeMs; }
+  catch (error) { if (error.code === 'ENOENT') { info.missing = true; return info; } throw error; }
+  info.ageMs = Math.max(0, Date.now() - mtimeMs);
+  try {
+    const owner = JSON.parse(await readFile(path.join(lock, 'owner.json'), 'utf8'));
+    if (owner && typeof owner === 'object' && typeof owner.token === 'string') {
+      info.owner = owner;
+      const updated = Date.parse(owner.updatedAt ?? owner.acquiredAt ?? '');
+      if (Number.isFinite(updated)) info.ageMs = Math.max(0, Date.now() - updated);
+    }
+  } catch { /* missing/unreadable owner: fall back to the directory mtime */ }
+  return info;
+}
+function isStaleLock(info, ttlMs) {
+  if (!info || info.missing) return false;
+  const grace = info.owner ? ttlMs : Math.min(30_000, ttlMs);
+  return Number.isFinite(info.ageMs) && info.ageMs > grace;
+}
+async function touchLock(ownerPath, token) {
+  try {
+    const current = JSON.parse(await readFile(ownerPath, 'utf8'));
+    if (current?.token !== token) return;
+    await writeFile(ownerPath, JSON.stringify({ ...current, updatedAt: new Date().toISOString() }));
+  } catch { /* the lock was taken over; never resurrect it */ }
+}
+/** Remove only our own lock; a stale takeover may have replaced it. */
+async function releaseLock(lock, token) {
+  let current;
+  try { current = JSON.parse(await readFile(path.join(lock, 'owner.json'), 'utf8')); }
+  catch { return 'missing'; }
+  if (current?.token !== token) return 'skipped';
+  await rm(lock, { recursive: true, force: true });
+  return 'released';
+}
 export function compareRequirements(a, b) { return (a.source === 'user' ? 0 : 1) - (b.source === 'user' ? 0 : 1) || a.priority - b.priority || a.order - b.order || a.id.localeCompare(b.id); }
 function normalizeTags(tags = []) { if (!Array.isArray(tags) || tags.length > 30) throw new Error('Invalid tags'); return tags.map(tag => text(tag, 'tag', 100)); }
 function bullets(values, name, max, length) {

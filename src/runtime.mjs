@@ -256,7 +256,7 @@ async function executeTokenScoped(state, token, node, executors, { io, save, sig
       if (!executor) throw new RuntimeError('no_executor', `No ${node.type} executor is mounted`);
       const input = await io.get(token.inputRef); // Recorded input is never resolved again.
       if (packet.status !== 'active') { await archiveToken(state, token, 'cancelled', io, now); await save(); return; }
-      result = await executor({ node: effectiveNode, input, token, definition: state.definition, permissions: state.permissions, packet: { ...structuredClone(packet), results: structuredClone(token.results) }, context: { packetId: packet.id, results: structuredClone(token.results) }, signal });
+      result = await executor({ node: effectiveNode, input, token, definition: state.definition, permissions: state.permissions, packet: { ...structuredClone(packet), results: structuredClone(token.results) }, context: { packetId: packet.id, runId: state.runId, results: structuredClone(token.results) }, signal });
     }
     signal?.throwIfAborted();
     if (packet.status !== 'active') {

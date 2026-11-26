@@ -133,15 +133,22 @@ export function createExecutors({ ctx, exec, settings = {}, cwd, onActivity }) {
         scope.dispose();
       }
     },
-    async command({ node, input }) {
+    async command({ node, input, token, context }) {
       const commandCwd = node.config.cwd ? path.resolve(cwd, node.config.cwd) : cwd;
       const command = node.config.command;
       const scope = executionScope(exec.signal, node.config.timeoutMs ?? 120_000, `command ${node.id}`);
       // JSON command nodes exchange exactly one small JSON value with the script:
       // input through DSH_WORKFLOW_INPUT and a {outcome, output} result on stdout.
+      // Run/token metadata lets example locks record their owner for audit and
+      // stale-lock diagnosis without the script reading host internals.
+      const workflowEnv = {
+        ...(context?.runId ? { DSH_WORKFLOW_RUN_ID: String(context.runId) } : {}),
+        ...(token?.id ? { DSH_WORKFLOW_TOKEN_ID: String(token.id) } : {}),
+        ...(token?.packetId ? { DSH_WORKFLOW_PACKET_ID: String(token.packetId) } : {}),
+      };
       const environment = node.config.json === true
-        ? { ...process.env, DSH_WORKFLOW_INPUT: JSON.stringify(input ?? null) }
-        : process.env;
+        ? { ...process.env, ...workflowEnv, DSH_WORKFLOW_INPUT: JSON.stringify(input ?? null) }
+        : { ...process.env, ...workflowEnv };
       try {
         throwIfAborted(scope.signal);
         await preflightCommand(command, commandCwd);
