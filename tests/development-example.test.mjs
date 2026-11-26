@@ -1539,3 +1539,51 @@ test('a command received while a PR rework is running is queued, not applied or 
   assert.equal(current.status, 'human-pending');
   assert.equal(current.pr.reworkBrief.commentId, watched.output.command.commentId, 'the running command is not silently replaced');
 });
+
+
+test('PR intent evidence includes all comments and reviews, not only the newest window', async t => {
+  const { store, item, prState } = await readyPr(t);
+  for (let index = 0; index < 18; index += 1) {
+    await addPrComment(prState, { body: `older discussion ${index}`, created: '2020-01-01T00:00:00.000Z' });
+  }
+  await mutatePrState(prState, pr => {
+    pr.reviews = [{ id: 900, state: 'APPROVED', body: 'Older formal review context', user: { login: 'reviewer' }, commit_id: pr.headRefOid, submitted_at: '2020-01-02T00:00:00.000Z' }];
+  });
+  await addPrComment(prState, { body: '@workflow 看一下全部讨论' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'interpret');
+  const evidence = watched.output.evidence;
+  assert.ok(evidence.length >= 20, `evidence length ${evidence.length}`);
+  assert.ok(evidence.some(entry => entry.body.includes('older discussion 0')));
+  assert.ok(evidence.some(entry => entry.kind === 'review' && entry.body.includes('Older formal review context')));
+});
+
+test('PR intent evidence paginates beyond one GitHub page', async t => {
+  const { store, item, prState } = await readyPr(t);
+  await mutatePrState(prState, (pr, state) => {
+    pr.comments = pr.comments ?? [];
+    for (let index = 0; index < 105; index += 1) {
+      pr.comments.push({ id: state.nextComment++, body: `bulk ${index}`, user: { login: 'maintainer' }, author_association: 'OWNER', created_at: new Date().toISOString() });
+    }
+  });
+  await addPrComment(prState, { body: '@workflow 看一下批量讨论' });
+  const watched = await cli('pr-watch', { dataRef: store.ref(item.id), claimId: item.claimId });
+  assert.equal(watched.outcome, 'interpret');
+  assert.ok(watched.output.evidence.length >= 106, `evidence length ${watched.output.evidence.length}`);
+  assert.ok(watched.output.evidence.some(entry => entry.body.includes('bulk 0')));
+});
+
+test('requirement intent evidence includes comments older than the current revision window', async t => {
+  const base = await fixture(t);
+  const { state } = useFakeGh(t, base.root);
+  const { envelope, item } = await pendingReview(base.store);
+  await cli('publish-requirement-issue', envelope);
+  const number = (await base.store.get(item.id)).github.number;
+  for (let index = 0; index < 18; index += 1) await issueComment(state, number, `older issue discussion ${index}`);
+  await cli('publish-requirement-issue', envelope);
+  await issueComment(state, number, '@workflow 按前面的讨论修改');
+  const checked = await cli('check-requirement-issue', envelope);
+  assert.equal(checked.outcome, 'interpret');
+  assert.ok(checked.output.evidence.length >= 19, `evidence length ${checked.output.evidence.length}`);
+  assert.ok(checked.output.evidence.some(entry => entry.body.includes('older issue discussion 0')));
+});

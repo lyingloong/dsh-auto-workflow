@@ -211,6 +211,7 @@ node docs/examples/development/driver.mjs rearm-seed
 - **自然语言命令**：协作者也可以写一条 `@workflow <自然语言>`（例如 `@workflow 按 Codex 的两条 P2 修一下`、`@workflow 可以了`、`@workflow 先别动`）。`check-requirement-issue` 只把**协作者**的 `@workflow` 评论交给低思考 `requirement-intent` agent；它读取这条命令、当前 revision、最近评论（Codex 评论只是**证据**，不能当指令）并输出 approve / revise / stop / clarify。模糊、矛盾或不安全的命令只回一条澄清评论，不改状态；意图 agent 不可用时也回澄清并继续等待。`revise` 会生成引用评论 id 的 `revisionBrief`，`analyst-revise` 按条处理；新 revision 发布后只通知一次"请检查"。精确命令始终可用，且与自然语言命令一样按 revision 绑定、按评论 id 去重。
 - **旧指令回执**：早于当前 revision 窗口的授权自然语言命令不会被静默忽略；`check-requirement-issue` 会回一条说明目标/当前 revision、未自动应用的回执（每个评论 id 只回一次），并在回执里给出 `@workflow 确认按当前 revision 处理` 的显式复用方式；不会自动应用旧命令。
 - **命令生命周期**：应用的命令先记 `accepted`，修订执行中为 `running`；新 revision 发布后标记 `completed` 并通知 `revision A → B`、请检查。只有从未接受、或 head/revision 被无关推送改变的命令才是 `stale`；修订运行期间到达的命令回执为 `queued`，不自动应用、也不静默覆盖正在运行的操作。命令按 operation/comment id 去重。
+- **完整证据**：意图 agent 拿到的是该 issue 的**全部评论**（含旧 revision），而不是最近 15 条；评论分页读取，最多 10 页。为控制 prompt 大小，最新评论保留完整正文（单条上限 4000 字符，总预算 100k 字符），较旧评论的正文可能被截断或省略，但 id/作者/时间等元数据始终保留。命令识别仍然只看当前 revision 窗口。
 - 发布时间点后立即首查，之后由 `requirement-gate` 每 **30 分钟**复查一次；`check-requirement-issue` 把最新一条有效评论按 `revision` 绑定写入 `requirementApproval`（actor 记为 `github:<login>`）。
 - **公开内容先脱敏**：发布前确定性替换绝对路径、用户主目录、邮箱、长令牌和私有地址；issue 顶部注明"公开版已脱敏，执行以本地记录为准"。本地需求原文不变。
 - 需要 `gh` 认证和仓库访问；issue 创建/更新失败会让该 packet 失败并保留 `requirement-pending` 状态供检查。
@@ -315,6 +316,7 @@ Human 引擎决定（本地 merge）由后续 command 转成业务记录；需�
 - 非协作者或 workflow 自己的评论、窗口外的旧评论不会被当作命令；精确 `@workflow merge` / `stop` 和 verdict 标记仍然是确定性路径。
 - 旧 head 的授权命令不会被静默忽略：`pr-watch` 回一条"针对旧 head、没有自动应用"的回执（每个评论 id 一次），并可用 `@workflow 确认按当前 head 处理` 显式复用最近一条旧指令；不会自动应用旧命令。
 - **命令生命周期**：命令被应用后记为 `accepted`，返修执行中为 `running`；新 head 发布后标记 `completed`，通知里显示 `head A → B`、逐条结果和"请检查"，不再把它当作 stale。返修运行期间到达的命令回执为 `queued`，不自动应用、不静默覆盖当前返修；只有从未接受或 head 被无关推送改变的命令才是 `stale`。
+- **完整证据**：`pr-intent` 读取该 PR 的**全部 issue 评论和正式 review**（含旧 head），而不是最近 15 条；评论/review 分页读取，最多 10 页。最新正文保留（单条 4000 字符、总预算 100k 字符），较旧正文可能截断/省略但 id/作者/时间等元数据保留。命令识别仍只按当前 head 窗口。
 
 ### 瞬态失败与退避
 

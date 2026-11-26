@@ -68,7 +68,7 @@ PR body 顶部维护状态块（task/head/base/stage/next/order/ci），评论�
 
 `pr-watch` 看到外部 `MERGED` 后 fetch `origin/baseBranch`、fast-forward 本地 base，并验证 review commit 是祖先；`pr-merge` 在真正合并前重新读取 PR，处理评论变化、外部抢先合并和 PR 关闭。所有合并都必须使用 **merge commit**，squash/rebase 会改变 SHA 并被明确拒绝。PR `CLOSED` 未合并时回到同一需求返修，不自动本地 merge。GitHub 瞬态失败（连接/超时/5xx/rate limit）会写入 `retry` 退避状态并返回 `waiting`，连续 6 次后进入 `attention`；永久错误仍然失败 packet。
 
-需求 issue 和 PR 还支持**协作者自然语言 `@workflow` 命令**：低思考 intent agent 只把授权命令当指令，最近评论（含 Codex）只作证据，输出 approve/revise/stop/clarify 或 merge/revise/stop/clarify；修订/返修 brief 引用评论 id，新 revision/head 只通知一次"请检查"。精确命令与 verdict 仍是确定性 fallback。旧 head/revision 的授权命令会收到一次“未自动应用”的回执，并可用显式确认复用旧指令。命令按 accepted → running → completed/queued/stale 跟踪：返修完成的通知显示 `A → B`，不会把触发它的命令误判为 stale；运行期间到达的命令排队等待确认。示例锁使用 owner token、心跳和 TTL 接管；hard kill 留下的 stale 锁会被自动备份并审计，新 run 不需要手工移动锁文件。
+需求 issue 和 PR 还支持**协作者自然语言 `@workflow` 命令**：低思考 intent agent 读取完整讨论（全部评论/正式 review，含旧 head/revision；分页、最新正文优先、旧正文可截断但元数据保留），只把授权命令当指令，评论只作证据，输出 approve/revise/stop/clarify 或 merge/revise/stop/clarify；修订/返修 brief 引用评论 id，新 revision/head 只通知一次"请检查"。精确命令与 verdict 仍是确定性 fallback。旧 head/revision 的授权命令会收到一次“未自动应用”的回执，并可用显式确认复用旧指令。命令按 accepted → running → completed/queued/stale 跟踪：返修完成的通知显示 `A → B`，不会把触发它的命令误判为 stale；运行期间到达的命令排队等待确认。示例锁使用 owner token、心跳和 TTL 接管；hard kill 留下的 stale 锁会被自动备份并审计，新 run 不需要手工移动锁文件。
 
 `integrationMode:"local"` 只保留给没有 GitHub remote/token 的显式 fallback：跳过 PR，使用 `integrate` 本地合并与冲突 abort。正常开发不混用两种模式。
 

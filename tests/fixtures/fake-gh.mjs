@@ -11,6 +11,11 @@ const read = () => existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'u
 const write = value => writeFileSync(statePath, JSON.stringify(value));
 const valueAfter = flag => { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : null; };
 const valuesAfter = flag => args.reduce((out, value, index) => value === flag && index + 1 < args.length ? [...out, args[index + 1]] : out, []);
+const pageOf = value => Number((String(value).match(/[?&]page=(\d+)/) ?? [])[1] ?? 1);
+const pageRows = rows => {
+  const page = pageOf(args[1]);
+  return rows.slice((page - 1) * 100, page * 100);
+};
 const bodyOf = () => {
   const file = valueAfter('--body-file');
   if (file) return readFileSync(file, 'utf8');
@@ -94,12 +99,12 @@ if (args[0] === 'api' && /\/issues\/\d+\/comments(\?.*)?$/.test(args[1] ?? '')) 
   // when it exists, otherwise the requirement issue.
   const pr = state.prs.find(entry => entry.number === number);
   if (pr) {
-    process.stdout.write(JSON.stringify(pr.comments ?? []));
+    process.stdout.write(JSON.stringify(pageRows(pr.comments ?? [])));
     process.exit(0);
   }
   const issue = issueByNumber(state, number);
   if (!issue) fail('no fake issue');
-  process.stdout.write(JSON.stringify(issue.comments ?? []));
+  process.stdout.write(JSON.stringify(pageRows(issue.comments ?? [])));
   process.exit(0);
 }
 if (args[0] === 'api' && /\/pulls\/\d+\/reviews(\?.*)?$/.test(args[1] ?? '')) {
@@ -107,7 +112,7 @@ if (args[0] === 'api' && /\/pulls\/\d+\/reviews(\?.*)?$/.test(args[1] ?? '')) {
   const number = Number(String(args[1]).match(/\/pulls\/(\d+)\/reviews/)[1]);
   const pr = state.prs.find(entry => entry.number === number);
   if (!pr) fail('no fake PR');
-  process.stdout.write(JSON.stringify(pr.reviews ?? []));
+  process.stdout.write(JSON.stringify(pageRows(pr.reviews ?? [])));
   process.exit(0);
 }
 if (args[0] === 'api' && /\/collaborators\/[^/]+\/permission(\?.*)?$/.test(args[1] ?? '')) {

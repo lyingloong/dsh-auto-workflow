@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- intent agent 的 evidence 改为读取完整讨论：issue 的全部评论和 PR 的全部评论 + 正式 review（含旧 head/revision），GitHub API 分页（最多 10 页），最新正文优先（单条 4000 字符、总预算 100k 字符），较旧正文可截断/省略但 id/作者/时间等元数据保留；命令识别仍只看当前窗口。
+
 - 自然语言命令改为显式操作生命周期：accepted → running → completed；返修/修订产生的新 head/revision 通知显示 `A → B` 和“请检查”，不再把触发命令误判为 stale。返修运行期间到达的命令回执为 queued，不自动应用、不静默覆盖；只有从未接受或目标被无关推送改变时才 stale。按 operation/comment id 去重，issue 与 PR 共用同一生命周期。（#38）
 
 - 示例 store/integration 锁改为自描述、自愈：owner.json 记录 token/pid/host/runId/tokenId 与获取/更新时间，持有期间心跳；TTL 到期且心跳停止的锁原子备份到 `locks/.stale/` 并写 `locks/events.log`，活锁只返回带 owner 摘要的有界 `BusinessBusy`；释放校验 owner token，旧 owner 不会删除新锁；新增 `driver locks` 只读检查/显式清理和 `status` 锁报告；command 节点获得 `DSH_WORKFLOW_RUN_ID`/`TOKEN_ID`/`PACKET_ID` 环境变量用于锁审计。（#36）

@@ -161,14 +161,25 @@ async function writeProtocol(store, item, pr, state) {
   return item.pr;
 }
 
+async function pagedGh(store, resource) {
+  const rows = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const batch = await ghJson(store.config.repoRoot, ['api', `${resource}?per_page=100&page=${page}`]);
+    if (!Array.isArray(batch)) throw new Error('GitHub API did not return a list');
+    rows.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return rows;
+}
+
 async function restComments(store, number) {
   const { owner, name } = await repoCoordinates(store);
-  return ghJson(store.config.repoRoot, ['api', `repos/${owner}/${name}/issues/${number}/comments?per_page=100`]);
+  return pagedGh(store, `repos/${owner}/${name}/issues/${number}/comments`);
 }
 
 async function restReviews(store, number) {
   const { owner, name } = await repoCoordinates(store);
-  return ghJson(store.config.repoRoot, ['api', `repos/${owner}/${name}/pulls/${number}/reviews?per_page=100`]);
+  return pagedGh(store, `repos/${owner}/${name}/pulls/${number}/reviews`);
 }
 
 /** Review authors have no author_association field in the REST review shape. */
@@ -212,7 +223,7 @@ async function feedbackFor(store, item, pr) {
     labels: pr.labels,
     mergeIntentOverride: mergeOverride,
   });
-  return { ...result, comments, windowStart, evidence: evidenceFor(comments, windowStart) };
+  return { ...result, comments, windowStart, reviews, evidence: evidenceFor(comments, reviews) };
 }
 
 function waitingReason(feedback) {
@@ -256,25 +267,48 @@ function backoffResult(item, reason) {
   return { item, outcome: 'waiting', pr: item.pr, feedback: null, reason };
 }
 
+const EVIDENCE_BODY_LIMIT = 4_000;
+const EVIDENCE_BUDGET = 100_000;
 const INTENT_COMMAND = /^\s*@workflow\s+(?!merge\b|stop\b)([\s\S]+)$/i;
 const CONFIRM_COMMAND = /^\s*@workflow\s+确认按当前\s*(?:head|revision)\s*处理\s*$/i;
 const HEAD_MARKER = /\[head=([0-9a-f]{7,64})\]/i;
 function commentTime(entry) {
   return Date.parse(entry?.created_at ?? entry?.createdAt ?? '');
 }
-/** Recent comments become bounded, untrusted evidence for the intent step. */
-function evidenceFor(comments = [], windowStart) {
-  const start = Date.parse(windowStart ?? '') || 0;
-  return comments
-    .filter(entry => (commentTime(entry) || 0) >= start)
-    .slice(-15)
-    .map(entry => ({
-      commentId: Number(entry.id),
+/**
+ * The whole discussion as bounded evidence. Every comment and review stays
+ * represented (id/author/date); the newest bodies get the byte budget and older
+ * bodies are truncated or omitted rather than silently dropping the entry.
+ */
+function evidenceFor(comments = [], reviews = []) {
+  const entries = [
+    ...comments.map(entry => ({
+      commentId: Number(entry.id), kind: 'comment',
       author: entry.user?.login ?? entry.author?.login ?? 'unknown',
       association: entry.author_association ?? entry.authorAssociation ?? '',
       role: /\[role=codex\]/i.test(String(entry.body ?? '')) ? 'codex' : null,
-      body: String(entry.body ?? '').slice(0, 1200),
-    }));
+      at: entry.created_at ?? entry.createdAt ?? '',
+      body: String(entry.body ?? ''),
+    })),
+    ...reviews.map(entry => ({
+      commentId: Number(entry.id), kind: 'review',
+      author: entry.user?.login ?? entry.author?.login ?? 'unknown',
+      association: '',
+      role: /\[role=codex\]/i.test(String(entry.body ?? '')) ? 'codex' : null,
+      state: entry.state ?? null,
+      at: entry.submitted_at ?? entry.submittedAt ?? '',
+      body: String(entry.body ?? ''),
+    })),
+  ].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0) || a.commentId - b.commentId);
+  let budget = EVIDENCE_BUDGET;
+  const bounded = [...entries].reverse().map(entry => {
+    if (budget <= 0) return { ...entry, body: '', omitted: true };
+    const cap = Math.min(EVIDENCE_BODY_LIMIT, budget);
+    const body = entry.body.length > cap ? entry.body.slice(0, cap) : entry.body;
+    budget -= body.length;
+    return body.length < entry.body.length ? { ...entry, body, truncated: true } : { ...entry, body };
+  });
+  return bounded.reverse();
 }
 /** Acknowledge authorized commands that target an old head or the closed window. */
 async function acknowledgePrStale(store, item, feedback) {

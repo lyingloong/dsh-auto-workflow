@@ -16,17 +16,29 @@ const DECISION = /^\s*@workflow\s+(approve|reject)\b([\s\S]*)$/i;
 const INTENT_COMMAND = /^\s*@workflow\s+(?!approve\b|reject\b)([\s\S]+)$/i;
 const CONFIRM_COMMAND = /^\s*@workflow\s+确认按当前\s*(?:revision|head)\s*处理\s*$/i;
 function commentTime(comment) { return Date.parse(comment?.created_at ?? comment?.createdAt ?? '') || 0; }
-function evidenceFor(comments, floor) {
-  return comments
-    .filter(comment => Number(comment.id) > floor)
-    .slice(-15)
+const EVIDENCE_BODY_LIMIT = 4_000;
+const EVIDENCE_BUDGET = 100_000;
+function evidenceFor(comments = []) {
+  const entries = comments
     .map(comment => ({
       commentId: Number(comment.id),
+      kind: 'comment',
       author: comment.user?.login ?? comment.author?.login ?? 'unknown',
       association: comment.author_association ?? '',
       role: /\[role=codex\]/i.test(String(comment.body ?? '')) ? 'codex' : null,
-      body: String(comment.body ?? '').slice(0, 1200),
-    }));
+      at: comment.created_at ?? comment.createdAt ?? '',
+      body: String(comment.body ?? ''),
+    }))
+    .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0) || a.commentId - b.commentId);
+  let budget = EVIDENCE_BUDGET;
+  const bounded = [...entries].reverse().map(entry => {
+    if (budget <= 0) return { ...entry, body: '', omitted: true };
+    const cap = Math.min(EVIDENCE_BODY_LIMIT, budget);
+    const body = entry.body.length > cap ? entry.body.slice(0, cap) : entry.body;
+    budget -= body.length;
+    return body.length < entry.body.length ? { ...entry, body, truncated: true } : { ...entry, body };
+  });
+  return bounded.reverse();
 }
 /** Acknowledge authorized commands that fell out of the current revision window. */
 async function acknowledgeStale(store, item, comments, claimId) {
@@ -142,8 +154,13 @@ async function writeBodyFile(body) {
 }
 
 async function listComments(cwd, { owner, name }, number) {
-  const rows = await ghJson(cwd, ['api', `repos/${owner}/${name}/issues/${number}/comments?per_page=100`]);
-  if (!Array.isArray(rows)) throw new Error('GitHub issue comments were not a list');
+  const rows = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const batch = await ghJson(cwd, ['api', `repos/${owner}/${name}/issues/${number}/comments?per_page=100&page=${page}`]);
+    if (!Array.isArray(batch)) throw new Error('GitHub issue comments were not a list');
+    rows.push(...batch);
+    if (batch.length < 100) break;
+  }
   return rows;
 }
 
@@ -227,7 +244,7 @@ export async function check(store, id, claimId) {
         outcome: 'interpret',
         revision: item.revision,
         command: { commentId: Number(confirmation.id), body: prior.body, author: confirmation.user?.login ?? 'unknown', confirmedFrom: prior.commentId },
-        evidence: evidenceFor(comments, floor),
+        evidence: evidenceFor(comments),
       };
     }
     // No exact command: hand one authorized natural-language command to the
@@ -244,7 +261,7 @@ export async function check(store, id, claimId) {
         outcome: 'interpret',
         revision: item.revision,
         command: { commentId: Number(entry.id), body: String(entry.body ?? '').trim().slice(0, 2000), author: entry.user?.login ?? 'unknown' },
-        evidence: evidenceFor(comments, floor),
+        evidence: evidenceFor(comments),
       };
     }
     return { item, outcome: 'waiting', reason: 'no-decision' };

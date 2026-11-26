@@ -72,6 +72,7 @@ workflow 只认这些确定性信号：
 - 精确命令（`@workflow approve|reject`、`@workflow merge|stop`、`[verdict=...]`、正式 review）仍是确定性路径。
 - 旧 head/revision 的授权自然语言命令会收到一条回执，说明目标/当前值和“未自动应用”，并按评论 id 只回一次；`@workflow 确认按当前 head 处理`（issue 为 `revision`）可显式复用最近一条旧指令，但绝不会静默应用。
 - 命令是操作生命周期：accepted → running → completed（新 revision/head 通知 `A → B`、请检查）；运行期间到达的命令记为 queued，不自动应用也不静默覆盖；只有从未接受或目标被无关推送改变时才是 stale。
+- intent agent 读取完整讨论：全部 issue 评论和正式 review（含旧 head/revision），按页读取；最新正文优先，较旧正文可能截断/省略但 id/作者/时间保留。命令识别仍只按当前 head/revision 窗口。
 
 ## 4. 合并门与策略
 
